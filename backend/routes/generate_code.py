@@ -76,7 +76,6 @@ VISUAL_QA_TIMEOUT_SECONDS = 20.0
 from routes.model_choice_sets import (
     ALL_KEYS_MODELS_DEFAULT,
     ALL_KEYS_MODELS_TEXT_CREATE,
-    ALL_KEYS_MODELS_UPDATE,
     ANTHROPIC_ONLY_MODELS,
     GEMINI_ANTHROPIC_MODELS,
     GEMINI_OPENAI_MODELS,
@@ -84,6 +83,7 @@ from routes.model_choice_sets import (
     OPENAI_ANTHROPIC_MODELS,
     OPENAI_ONLY_MODELS,
     VIDEO_VARIANT_MODELS,
+    update_variant_models,
     video_frames_variant_models,
 )
 
@@ -506,12 +506,20 @@ class ModelSelectionStage:
                 )
             return list(VIDEO_VARIANT_MODELS)
 
+        # Updates: two options from two different providers when possible.
+        if generation_type == "update":
+            update_models = update_variant_models(
+                openai=bool(openai_api_key),
+                anthropic=bool(anthropic_api_key),
+                gemini=bool(gemini_api_key),
+            )
+            if update_models is not None:
+                return list(update_models)[:num_variants]
+
         # Define models based on available API keys
         if gemini_api_key and anthropic_api_key and openai_api_key:
             if input_mode == "text" and generation_type == "create":
                 models = list(ALL_KEYS_MODELS_TEXT_CREATE)
-            elif generation_type == "update":
-                models = list(ALL_KEYS_MODELS_UPDATE)
             else:
                 models = list(ALL_KEYS_MODELS_DEFAULT)
         elif gemini_api_key and anthropic_api_key:

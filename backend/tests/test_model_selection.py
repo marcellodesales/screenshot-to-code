@@ -324,3 +324,44 @@ class TestModelSelectionVideoWithoutGemini:
         message = mock_throw_error.await_args_list[0].args[0]
         assert "Video mode requires a Gemini API key" in message
         assert "No OpenAI, Anthropic, or Gemini API key found" not in message
+
+
+_KEY_COMBINATIONS = [
+    pytest.param(openai, anthropic, gemini, id=f"openai={openai}-anthropic={anthropic}-gemini={gemini}")
+    for openai in (False, True)
+    for anthropic in (False, True)
+    for gemini in (False, True)
+    if openai or anthropic or gemini
+]
+
+_PREFERRED_UPDATE_MODEL = {
+    "anthropic": Llm.CLAUDE_OPUS_5_5_MEDIUM,
+    "openai": Llm.GPT_5_6_SOL_HIGH,
+    "gemini": Llm.GEMINI_3_1_PRO_PREVIEW_HIGH,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_mode", ["text", "image"])
+@pytest.mark.parametrize("openai,anthropic,gemini", _KEY_COMBINATIONS)
+async def test_update_variants_use_distinct_providers(
+    openai: bool, anthropic: bool, gemini: bool, input_mode: str
+) -> None:
+    """With >= 2 provider keys, the two update options come from different
+    providers, each the provider's quality-first model."""
+    from llm import MODEL_PROVIDER
+
+    models = await ModelSelectionStage(AsyncMock()).select_models(
+        generation_type="update",
+        input_mode=input_mode,  # type: ignore[arg-type]
+        openai_api_key="key" if openai else None,
+        anthropic_api_key="key" if anthropic else None,
+        gemini_api_key="key" if gemini else None,
+    )
+
+    assert len(models) == 2
+    providers = [MODEL_PROVIDER[model] for model in models]
+    if sum((openai, anthropic, gemini)) >= 2:
+        assert providers[0] != providers[1], models
+        for model, provider in zip(models, providers):
+            assert model == _PREFERRED_UPDATE_MODEL[provider]

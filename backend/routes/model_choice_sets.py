@@ -61,6 +61,30 @@ ALL_KEYS_MODELS_UPDATE = (
     Llm.GPT_5_6_SOL_HIGH,
 )
 
+# Quality-first update model per provider, in preference order. Updates use
+# two options from two different providers whenever >= 2 keys exist.
+UPDATE_MODEL_BY_PROVIDER: tuple[tuple[str, Llm], ...] = (
+    ("anthropic", Llm.CLAUDE_OPUS_5_5_MEDIUM),
+    ("openai", Llm.GPT_5_6_SOL_HIGH),
+    ("gemini", Llm.GEMINI_3_1_PRO_PREVIEW_HIGH),
+)
+
+
+def update_variant_models(
+    *, openai: bool, anthropic: bool, gemini: bool
+) -> tuple[Llm, Llm] | None:
+    """Two update options from the first two available providers.
+
+    Returns None with fewer than two provider keys (the key-subset list is
+    used then). With all keys this equals ALL_KEYS_MODELS_UPDATE.
+    """
+    available = {"openai": openai, "anthropic": anthropic, "gemini": gemini}
+    models = [model for provider, model in UPDATE_MODEL_BY_PROVIDER if available[provider]]
+    if len(models) < 2:
+        return None
+    return (models[0], models[1])
+
+
 # Key subset fallbacks.
 GEMINI_ANTHROPIC_MODELS = (
     Llm.GEMINI_3_8_FLASH_MINIMAL,
