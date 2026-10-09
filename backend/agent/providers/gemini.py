@@ -38,6 +38,8 @@ def serialize_gemini_tools(tools: List[CanonicalToolDefinition]) -> List[types.T
         )
         for tool in tools
     ]
+    if not declarations:
+        return []
     return [types.Tool(function_declarations=declarations)]
 
 
@@ -328,7 +330,8 @@ class GeminiProviderSession(ProviderSession):
                 thinking_level=cast(Any, thinking_level),
                 include_thoughts=True,
             ),
-            tools=self._tools,
+            # An empty tools list is omitted entirely: a tools-free completion.
+            tools=self._tools or None,
         )
 
         request_payload = {

@@ -8,7 +8,7 @@ import toast from "react-hot-toast";
 
 interface Props {
   code: string;
-  setCode: React.Dispatch<React.SetStateAction<string>>;
+  setCode: (code: string) => void;
   settings: Settings;
 }
 

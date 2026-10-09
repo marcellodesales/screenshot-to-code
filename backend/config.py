@@ -32,6 +32,17 @@ LOCAL_ASSET_DIR = os.environ.get(
 # infers this per-request; the evals path has no request, so it uses this.
 LOCAL_ASSET_BASE_URL = os.environ.get("LOCAL_ASSET_BASE_URL", "http://127.0.0.1:7001")
 
+# Stack generator ("Build app"): catalogued target-stack templates, per-run
+# git workspaces, and the flag gating the Docker-driven build endpoints.
+STACK_TEMPLATES_DIR = os.environ.get(
+    "STACK_TEMPLATES_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "internal", "stack"),
+)
+RUNS_DIR = os.environ.get("RUNS_DIR", "/data/runs")
+STACK_GENERATOR_ENABLED = os.environ.get(
+    "STACK_GENERATOR_ENABLED", ""
+).strip().lower() in {"1", "true", "yes", "on"}
+
 # Set to True when running in production (on the hosted version)
 # Used as a feature flag to enable or disable certain features
 IS_PROD = os.environ.get("IS_PROD", False)

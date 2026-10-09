@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { BsCheckCircleFill, BsExclamationTriangleFill } from "react-icons/bs";
-import { AppTheme, EditorTheme, Settings } from "../../types";
+import { AppTheme, BuildSystem, EditorTheme, Settings } from "../../types";
 import { capitalize } from "../../lib/utils";
 import {
   Select,
@@ -11,6 +11,12 @@ import {
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
 import { HTTP_BACKEND_URL, IS_RUNNING_ON_CLOUD } from "../../config";
+import { BUILD_SYSTEMS } from "../../lib/settings";
+import {
+  enabledBuildSystems,
+  listStacks,
+  StackCatalogEntry,
+} from "../../lib/runs";
 
 interface Props {
   settings: Settings;
@@ -41,6 +47,31 @@ function SettingsTab({ settings, setSettings, appTheme, setAppTheme }: Props) {
       cancelled = true;
     };
   }, []);
+
+  // null = not loaded yet; [] when the backend has no stack catalog.
+  const [stackCatalog, setStackCatalog] = useState<StackCatalogEntry[] | null>(
+    null
+  );
+  const [stackCatalogError, setStackCatalogError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    listStacks()
+      .then((stacks) => {
+        if (!cancelled) setStackCatalog(Array.isArray(stacks) ? stacks : []);
+      })
+      .catch(() => {
+        if (!cancelled) setStackCatalogError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const enabledSystems = enabledBuildSystems(
+    stackCatalog ?? [],
+    settings.generatedCodeConfig
+  );
 
   const handleThemeChange = (theme: EditorTheme) => {
     setSettings((s) => ({
@@ -123,6 +154,58 @@ function SettingsTab({ settings, setSettings, appTheme, setAppTheme }: Props) {
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+          </div>
+
+          {/* Build system (stack generator) */}
+          <div className="rounded-lg border border-gray-200 bg-white dark:border-zinc-700 dark:bg-zinc-800/60">
+            <div className="border-b border-gray-100 px-4 py-3 dark:border-zinc-700">
+              <h2 className="text-sm font-medium text-gray-900 dark:text-white">
+                Build system
+              </h2>
+            </div>
+            <div className="flex items-center justify-between px-4 py-3">
+              <div>
+                <span className="text-sm text-gray-700 dark:text-zinc-300">
+                  Package manager
+                </span>
+                <p className="mt-0.5 text-xs text-gray-500 dark:text-zinc-400">
+                  {stackCatalogError
+                    ? "Could not load the stack catalog from the backend."
+                    : stackCatalog === null
+                      ? "Loading available stacks…"
+                      : "Used by 🚀 Build app. Only build systems with a stack for the current output are available."}
+                </p>
+              </div>
+              <Select
+                name="build-system"
+                value={settings.buildSystem}
+                onValueChange={(value) =>
+                  setSettings((s) => ({
+                    ...s,
+                    buildSystem: value as BuildSystem,
+                  }))
+                }
+              >
+                <SelectTrigger className="w-[140px]" data-testid="build-system">
+                  <span className="notranslate font-mono" translate="no">
+                    {settings.buildSystem}
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  {BUILD_SYSTEMS.map((buildSystem) => (
+                    <SelectItem
+                      key={buildSystem}
+                      value={buildSystem}
+                      disabled={!enabledSystems.has(buildSystem)}
+                    >
+                      <span className="notranslate font-mono" translate="no">
+                        {buildSystem}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
 

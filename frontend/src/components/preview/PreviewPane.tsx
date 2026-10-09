@@ -11,7 +11,9 @@ import {
   LuRefreshCw,
   LuDownload,
 } from "react-icons/lu";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { nanoid } from "nanoid";
+import toast from "react-hot-toast";
 import { AppState, Settings } from "../../types";
 import CodeTab from "./CodeTab";
 import { Button } from "../ui/button";
@@ -23,6 +25,20 @@ import { downloadCode } from "./download";
 import { SelectAndEditToolbarButton } from "../select-and-edit/SelectAndEditControls";
 import { normalizeBabelCdn } from "../../lib/babelCdn";
 import ImageScanningPreview from "./ImageScanningPreview";
+import { useDebouncedCallback } from "../../hooks/useDebouncedCallback";
+import { saveVersion } from "../../lib/runs";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import BuildAppPanel from "../build/BuildAppPanel";
+
+// Manual edits are saved to the backend run after this much idle time.
+const MANUAL_EDIT_SAVE_DELAY_MS = 1500;
+
+interface ManualEditSave {
+  runId: string;
+  hash: string;
+  parentCommitHash: string | null;
+  optionIndex: number;
+}
 
 function prepareHtmlForNewTab(code: string) {
   const html = normalizeBabelCdn(code);
@@ -46,7 +62,7 @@ interface Props {
 
 function PreviewPane({ settings, onOpenVersions }: Props) {
   const { appState } = useAppStore();
-  const { inputMode, head, commits, setHead } = useProjectStore();
+  const { inputMode, head, commits, setHead, runId } = useProjectStore();
   const [activeTab, setActiveTab] = useState("desktop");
   const [desktopScale, setDesktopScale] = useState(1);
   const [desktopViewMode, setDesktopViewMode] = useState<"fit" | "actual">("fit");
@@ -88,6 +104,72 @@ function PreviewPane({ settings, onOpenVersions }: Props) {
 
   const canSelectAndEdit =
     appState === AppState.CODE_READY || !!isSelectedVariantComplete;
+
+  const headGitSha = currentCommit ? currentCommit.gitSha : undefined;
+  const canBuildApp = canSelectAndEdit && !!runId && !!headGitSha;
+
+  // Saves run one after another so a version's git commits land in order.
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const saveManualEdit = useCallback((job: ManualEditSave) => {
+    saveChainRef.current = saveChainRef.current.then(async () => {
+      const commit = useProjectStore.getState().commits[job.hash];
+      if (!commit) return;
+      try {
+        const { gitSha } = await saveVersion(job.runId, job.hash, {
+          parentCommitHash: job.parentCommitHash,
+          optionIndex: job.optionIndex,
+          code: commit.variants[0]?.code ?? "",
+        });
+        useProjectStore.getState().setCommitGitSha(job.hash, gitSha);
+      } catch (error) {
+        console.error("Failed to save manual edit", error);
+        const reason = error instanceof Error ? error.message : String(error);
+        toast.error(`Could not save manual edit: ${reason}`, {
+          id: "manual-edit-save",
+        });
+      }
+    });
+  }, []);
+  const debouncedSave = useDebouncedCallback(
+    saveManualEdit,
+    MANUAL_EDIT_SAVE_DELAY_MS
+  );
+  const pendingSaveHashRef = useRef<string | null>(null);
+
+  // CodeMirror captures this callback once, so it reads everything from the
+  // stores instead of closing over render-time state.
+  const handleCodeChange = useCallback(
+    (code: string) => {
+      if (useAppStore.getState().appState !== AppState.CODE_READY) return;
+      const project = useProjectStore.getState();
+      const headCommit = project.head ? project.commits[project.head] : null;
+      if (!headCommit) return;
+      // The editor also reports programmatic syncs (version switches,
+      // streaming); only a real difference is a manual edit.
+      const headCode =
+        headCommit.variants[headCommit.selectedVariantIndex]?.code ?? "";
+      if (code === headCode) return;
+
+      const hash = project.applyManualEdit(code, nanoid());
+      const commit = hash ? useProjectStore.getState().commits[hash] : null;
+      if (!hash || !commit || commit.type !== "code_edit") return;
+      const runId = useProjectStore.getState().runId;
+      if (!runId) return; // e.g. imported code: no backend run to save into
+
+      // Never let a pending save of another version be replaced.
+      if (pendingSaveHashRef.current && pendingSaveHashRef.current !== hash) {
+        debouncedSave.flush();
+      }
+      pendingSaveHashRef.current = hash;
+      debouncedSave.call({
+        runId,
+        hash,
+        parentCommitHash: commit.parentHash,
+        optionIndex: commit.optionIndex,
+      });
+    },
+    [debouncedSave]
+  );
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -203,6 +285,35 @@ function PreviewPane({ settings, onOpenVersions }: Props) {
               (activeTab === "desktop" || activeTab === "mobile") && (
                 <SelectAndEditToolbarButton />
               )}
+            {canSelectAndEdit && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    disabled={!canBuildApp}
+                    data-testid="build-app"
+                    title={
+                      canBuildApp
+                        ? "Build this version into a running app"
+                        : "Available once this version is saved to the run (git SHA shown in Versions)"
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:border-violet-300 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-gray-200 disabled:hover:text-gray-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-violet-500 dark:hover:text-violet-300"
+                  >
+                    🚀 Build app
+                  </button>
+                </PopoverTrigger>
+                {canBuildApp && head && runId && (
+                  <PopoverContent align="end" className="w-80">
+                    <BuildAppPanel
+                      runId={runId}
+                      commitHash={head}
+                      versionNumber={currentVersionIndex + 1}
+                      settings={settings}
+                    />
+                  </PopoverContent>
+                )}
+              </Popover>
+            )}
             {(appState === AppState.CODE_READY || isSelectedVariantComplete) && (
               <Button
                 onClick={() => downloadCode(previewCode)}
@@ -261,7 +372,7 @@ function PreviewPane({ settings, onOpenVersions }: Props) {
         <TabsContent value="code" className="flex-1 min-h-0 mt-0 overflow-auto">
           <CodeTab
             code={previewCode}
-            setCode={() => {}}
+            setCode={handleCodeChange}
             settings={settings}
           />
         </TabsContent>

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   AgentEvent,
+  CodeEditCommit,
   Commit,
   CommitHash,
   VariantHistoryMessage,
@@ -21,6 +22,11 @@ interface ProjectStore {
   assetsById: Record<string, PromptAsset>;
   upsertPromptAssets: (assets: PromptAsset[]) => void;
   resetPromptAssets: () => void;
+
+  // Backend run workspace this project's versions are committed into
+  runId: string | null;
+  setRunId: (runId: string | null) => void;
+  setCommitGitSha: (hash: CommitHash, gitSha: string) => void;
 
   // Outputs
   commits: Record<string, Commit>;
@@ -75,12 +81,30 @@ interface ProjectStore {
     updates: Partial<AgentEvent>
   ) => void;
 
+  // Record a manual code edit of the head version. The first edit after
+  // any other version creates a `code_edit` child of the head; further edits
+  // update that same (still uncommitted) version. Returns its hash, or null
+  // when there is no head.
+  applyManualEdit: (code: string, newHash?: CommitHash) => CommitHash | null;
+
   setHead: (hash: CommitHash) => void;
   resetHead: () => void;
 
   executionConsoles: { [key: number]: string[] };
   appendExecutionConsole: (variantIndex: number, line: string) => void;
   resetExecutionConsoles: () => void;
+}
+
+// nanoid is ESM-only (it breaks the Jest/CommonJS store tests), so manual-edit
+// versions get their hash from Web Crypto with the same URL-safe alphabet.
+const HASH_ALPHABET =
+  "useandom-26T198340PX75pxJACKVERYMINDBUSHWOLF_GQZbfghjklqvwyzrict";
+function randomCommitHash(size = 21): CommitHash {
+  const bytes = new Uint8Array(size);
+  globalThis.crypto.getRandomValues(bytes);
+  let id = "";
+  for (const byte of bytes) id += HASH_ALPHABET[byte & 63];
+  return id;
 }
 
 export const useProjectStore = create<ProjectStore>((set, get) => ({
@@ -102,6 +126,18 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       return { assetsById: merged };
     }),
   resetPromptAssets: () => set({ assetsById: {} }),
+
+  runId: null,
+  setRunId: (runId) => set({ runId }),
+  // Allowed on committed commits: the SHA arrives after the version is done.
+  setCommitGitSha: (hash, gitSha) =>
+    set((state) => {
+      const commit = state.commits[hash];
+      if (!commit) return state;
+      return {
+        commits: { ...state.commits, [hash]: { ...commit, gitSha } },
+      };
+    }),
 
   // Outputs
   commits: {},
@@ -153,7 +189,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       return { commits: newCommits, latestCommitHash: newLatestCommitHash };
     });
   },
-  resetCommits: () => set({ commits: {}, latestCommitHash: null }),
+  // A new project starts a new backend run, so the run id goes with the commits.
+  resetCommits: () => set({ commits: {}, latestCommitHash: null, runId: null }),
 
   appendCommitCode: (hash: CommitHash, numVariant: number, code: string) =>
     set((state) => {
@@ -440,6 +477,52 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         },
       };
     }),
+
+  applyManualEdit: (code, newHash) => {
+    const { head, commits } = get();
+    const headCommit = head ? commits[head] : undefined;
+    if (!head || !headCommit) return null;
+
+    if (headCommit.type === "code_edit" && !headCommit.isCommitted) {
+      set((state) => ({
+        commits: {
+          ...state.commits,
+          [head]: {
+            ...headCommit,
+            variants: [{ ...headCommit.variants[0], code }],
+          },
+        },
+      }));
+      return head;
+    }
+
+    const now = Date.now();
+    const commit: CodeEditCommit = {
+      hash: newHash ?? randomCommitHash(),
+      parentHash: head,
+      dateCreated: new Date(now),
+      isCommitted: false,
+      type: "code_edit",
+      inputs: null,
+      optionIndex:
+        headCommit.type === "code_edit"
+          ? headCommit.optionIndex
+          : headCommit.selectedVariantIndex,
+      selectedVariantIndex: 0,
+      variants: [
+        {
+          code,
+          history: [],
+          status: "complete",
+          requestStartedAt: now,
+          completedAt: now,
+        },
+      ],
+    };
+    get().addCommit(commit);
+    get().setHead(commit.hash);
+    return commit.hash;
+  },
 
   setHead: (hash: CommitHash) => {
     // A target is a live element from the current preview document. It cannot

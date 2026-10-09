@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { generateCode } from "./generateCode";
 import { AppState, AppTheme, EditorTheme, Settings } from "./types";
 import { NEW_DESIGN_SYSTEM_CONTENT } from "./lib/design-systems";
+import { DEFAULT_BUILD_SYSTEM, withDefaultBuildSystem } from "./lib/settings";
 import { IS_RUNNING_ON_CLOUD } from "./config";
 import { OnboardingNote } from "./components/messages/OnboardingNote";
 import { usePersistedState } from "./hooks/usePersistedState";
@@ -72,6 +73,8 @@ function App() {
     // Outputs
     appendExecutionConsole,
     resetExecutionConsoles,
+    setRunId,
+    setCommitGitSha,
   } = useProjectStore();
 
   const {
@@ -99,6 +102,7 @@ function App() {
       generatedCodeConfig: Stack.HTML_TAILWIND,
       codeGenerationModel: CodeGenerationModel.GEMINI_3_FLASH_PREVIEW_MINIMAL,
       selectedDesignSystemId: null,
+      buildSystem: DEFAULT_BUILD_SYSTEM,
       // Only relevant for hosted version
       isTermOfServiceAccepted: false,
     },
@@ -178,6 +182,12 @@ function App() {
       }));
     }
   }, [settings.generatedCodeConfig, setSettings]);
+
+  useEffect(() => {
+    if (withDefaultBuildSystem(settings).buildSystem !== settings.buildSystem) {
+      setSettings((prev) => withDefaultBuildSystem(prev));
+    }
+  }, [settings, setSettings]);
 
   useEffect(() => {
     if (!("selectedDesignSystemId" in settings)) {
@@ -279,6 +289,11 @@ function App() {
       return;
     }
 
+    if (currentCommit.type === "code_edit") {
+      toast.error("Manual edits cannot be regenerated.");
+      return;
+    }
+
     // Re-run the initial create request.
     if (inputMode === "image" || inputMode === "video") {
       doCreate(referenceImages, inputMode);
@@ -329,12 +344,6 @@ function App() {
       (designSystem) => designSystem.id === settings.selectedDesignSystemId
     );
 
-    // Merge settings with params
-    const updatedParams = {
-      ...settings,
-      ...requestParams,
-      designSystem: selectedDesignSystem?.content ?? null,
-    };
 
     // Use 4 variants for create, 2 for edits to match backend counts
     // and avoid a flash when the backend sends the actual variant count
@@ -368,6 +377,21 @@ function App() {
     const commit = createCommit(commitInputObject);
     addCommit(commit);
     setHead(commit.hash);
+
+    // Merge settings with params. The run fields link this request to the
+    // backend run workspace: a create has no run yet (the backend allocates
+    // one and answers with `runInfo`), edits reuse the project's run.
+    const updatedParams = {
+      ...settings,
+      ...requestParams,
+      designSystem: selectedDesignSystem?.content ?? null,
+      runId:
+        requestParams.generationType === "create"
+          ? null
+          : useProjectStore.getState().runId,
+      commitHash: commit.hash,
+      parentCommitHash: commit.parentHash,
+    };
 
     lastThinkingEventIdRef.current = {};
     lastAssistantEventIdRef.current = {};
@@ -529,6 +553,14 @@ function App() {
         if (lastToolEventIdRef.current[variantIndex] === eventId) {
           delete lastToolEventIdRef.current[variantIndex];
         }
+      },
+      onRunInfo: (runId) => {
+        // Ignore a late run id for a project that has since been reset.
+        if (!useProjectStore.getState().commits[commit.hash]) return;
+        setRunId(runId);
+      },
+      onVersionCommitted: (commitHash, gitSha) => {
+        setCommitGitSha(commitHash, gitSha);
       },
       onCancel: (reason, errorMessage) => {
         // The project may have been reset while this generation was still in

@@ -52,6 +52,8 @@ MessageType = Literal[
     "assistant",
     "toolStart",
     "toolResult",
+    "runInfo",
+    "versionCommitted",
 ]
 from prompts.pipeline import build_prompt_messages
 from prompts.request_parsing import parse_prompt_content, parse_prompt_history
@@ -63,6 +65,7 @@ from uploaded_assets import (
 )
 from agent.runner import Agent
 from fs_logging.agent_runs import AgentRunRecorder
+from stack_generator.workspace import RunWorkspace, new_run_id
 from routes.model_choice_sets import (
     ALL_KEYS_MODELS_DEFAULT,
     ALL_KEYS_MODELS_TEXT_CREATE,
@@ -268,6 +271,10 @@ class ExtractedParams:
     should_extract_assets: bool = True
     asset_base_url: str = ""
     design_system: str | None = None
+    # Run workspace linking (spec §2.2); absent for older clients.
+    run_id: str | None = None
+    commit_hash: str | None = None
+    parent_commit_hash: str | None = None
 
 
 class ParameterExtractionStage:
@@ -390,7 +397,15 @@ class ParameterExtractionStage:
             option_codes=option_codes,
             asset_base_url=self.asset_base_url,
             design_system=design_system,
+            run_id=self._optional_str(params, "runId"),
+            commit_hash=self._optional_str(params, "commitHash"),
+            parent_commit_hash=self._optional_str(params, "parentCommitHash"),
         )
+
+    @staticmethod
+    def _optional_str(params: Dict[str, Any], key: str) -> str | None:
+        value = params.get(key)
+        return value if isinstance(value, str) and value else None
 
     def _get_from_settings_dialog_or_env(
         self, params: dict[str, Any], key: str, env_var: str | None
@@ -765,6 +780,100 @@ class ParameterExtractionMiddleware(Middleware):
         await next_func()
 
 
+class RunWorkspaceMiddleware(Middleware):
+    """Records every generation as a git version in its run workspace.
+
+    Opens the request's run (update) or starts a new one (create, or an
+    unknown/invalid run id), announces it with ``runInfo``, and after
+    generation commits the options and sends ``versionCommitted``.
+    Workspace failures are logged and never break generation.
+    """
+
+    async def process(
+        self, context: PipelineContext, next_func: Callable[[], Awaitable[None]]
+    ) -> None:
+        assert context.extracted_params is not None
+        params = context.extracted_params
+        workspace: RunWorkspace | None = None
+        is_new_run = False
+        try:
+            if params.generation_type == "update" and params.run_id:
+                workspace = await asyncio.to_thread(RunWorkspace.open, params.run_id)
+            if workspace is None:
+                workspace = await asyncio.to_thread(
+                    RunWorkspace.create,
+                    new_run_id(),
+                    source_stack=str(params.stack),
+                    input_mode=str(params.input_mode),
+                    prompt_text=params.prompt.get("text", ""),
+                )
+                is_new_run = True
+                await asyncio.to_thread(self._save_uploads, workspace, params)
+            await context.send_message("runInfo", workspace.run_id, 0)
+        except Exception as e:
+            print(f"[RUN_WORKSPACE] Disabled for this request: {e}")
+            workspace = None
+
+        await next_func()
+
+        if workspace is None or not params.commit_hash:
+            return
+        if not any(code.strip() for code in context.completions):
+            return
+        try:
+            git_sha = await asyncio.to_thread(
+                self._commit, workspace, params, context.completions, is_new_run
+            )
+            await context.send_message(
+                "versionCommitted",
+                None,
+                0,
+                {"commitHash": params.commit_hash, "gitSha": git_sha},
+            )
+        except Exception as e:
+            print(f"[RUN_WORKSPACE] Could not commit version: {e}")
+
+    @staticmethod
+    def _save_uploads(workspace: RunWorkspace, params: ExtractedParams) -> None:
+        uploads: list[tuple[Literal["video", "screenshots"], str]] = [
+            *(("screenshots", image) for image in params.prompt.get("images", [])),
+            *(("video", video) for video in params.prompt.get("videos", [])),
+        ]
+        for kind, data_url in uploads:
+            try:
+                workspace.save_upload(kind, data_url)
+            except ValueError:
+                pass  # Not a data URL (e.g. an already-hosted asset).
+
+    @staticmethod
+    def _commit(
+        workspace: RunWorkspace,
+        params: ExtractedParams,
+        completions: List[str],
+        is_new_run: bool,
+    ) -> str:
+        assert params.commit_hash is not None
+        # A failed variant keeps the code it was asked to edit.
+        option_codes = [
+            code
+            if code.strip()
+            else (params.option_codes[i] if i < len(params.option_codes) else "")
+            for i, code in enumerate(completions)
+        ]
+        if is_new_run and params.generation_type == "create":
+            message = f":art: Version 1 — mock ({params.stack})"
+        else:
+            number = len(workspace.metadata.get("versions") or []) + 1
+            instruction = params.prompt.get("text", "")[:72]
+            message = f":art: Version {number} — {instruction}"
+        return workspace.commit_version(
+            ui_commit_hash=params.commit_hash,
+            parent_ui_commit_hash=params.parent_commit_hash,
+            option_codes=option_codes,
+            message=message,
+        )
+
+
 class StatusBroadcastMiddleware(Middleware):
     """Sends initial status messages to all variants"""
 
@@ -897,6 +1006,7 @@ async def stream_code(websocket: WebSocket):
     # Configure the pipeline
     pipeline.use(WebSocketSetupMiddleware())
     pipeline.use(ParameterExtractionMiddleware())
+    pipeline.use(RunWorkspaceMiddleware())
     pipeline.use(StatusBroadcastMiddleware())
     pipeline.use(PromptCreationMiddleware())
     pipeline.use(CodeGenerationMiddleware())

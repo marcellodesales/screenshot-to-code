@@ -1,4 +1,4 @@
-import { renderHistory } from "./utils";
+import { renderHistory, shortSha } from "./utils";
 import { Commit, CommitHash } from "../commits/types";
 
 const basicLinearHistory: Record<CommitHash, Commit> = {
@@ -166,5 +166,51 @@ describe("History Utils", () => {
         videos: [],
       },
     ]);
+  });
+});
+
+describe("shortSha", () => {
+  test("returns the first 7 characters of a git SHA", () => {
+    expect(shortSha("0123456789abcdef0123456789abcdef01234567")).toBe(
+      "0123456"
+    );
+  });
+
+  test("returns null when there is no SHA yet", () => {
+    expect(shortSha(undefined)).toBeNull();
+    expect(shortSha("")).toBeNull();
+  });
+});
+
+describe("renderHistory git SHA", () => {
+  test("carries the commit gitSha through to the rendered item", () => {
+    const sha = "f".repeat(40);
+    const rendered = renderHistory([
+      { ...basicLinearHistory["0"], gitSha: sha },
+    ]);
+    expect(rendered[0].gitSha).toBe(sha);
+  });
+});
+
+describe("manual edit versions", () => {
+  test("labels code_edit versions as Manual edit", () => {
+    const rendered = renderHistory([
+      basicLinearHistory["0"],
+      {
+        hash: "m1",
+        dateCreated: new Date(),
+        isCommitted: false,
+        type: "code_edit",
+        parentHash: "0",
+        variants: [{ code: "<html>edited</html>", history: [] }],
+        selectedVariantIndex: 0,
+        inputs: null,
+        optionIndex: 0,
+      },
+    ]);
+    expect(rendered[1].type).toBe("Manual edit");
+    expect(rendered[1].summary).toBe("Manual edit");
+    expect(rendered[1].images).toEqual([]);
+    expect(rendered[1].selectedElementTag).toBeNull();
   });
 });
