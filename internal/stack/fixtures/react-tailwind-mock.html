@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- s2c-fixture-marker: S2C_FIXTURE_7f3a9c1e_REACT_TAILWIND -->
+  <title>Acme Analytics — Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/react@18.0.0/umd/react.development.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.0.0/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css"></link>
+</head>
+<body class="bg-slate-100 text-slate-800">
+  <div id="root"></div>
+  <noscript>S2C_FIXTURE_7f3a9c1e_REACT_TAILWIND</noscript>
+
+  <script type="text/babel">
+    const { useState } = React;
+
+    const stats = [
+      { label: "Revenue", value: "$48,920", delta: "+12.4%", up: true, icon: "fa-dollar-sign" },
+      { label: "Active users", value: "3,218", delta: "+4.1%", up: true, icon: "fa-users" },
+      { label: "Churn", value: "1.8%", delta: "-0.3%", up: false, icon: "fa-user-minus" },
+      { label: "Tickets", value: "57", delta: "+9", up: true, icon: "fa-life-ring" },
+    ];
+
+    const orders = [
+      { id: "#10421", customer: "Maria Lopez", total: "$240.00", status: "Paid" },
+      { id: "#10420", customer: "Kenji Sato", total: "$89.50", status: "Pending" },
+      { id: "#10419", customer: "Amara Okafor", total: "$1,120.00", status: "Paid" },
+      { id: "#10418", customer: "Lukas Weber", total: "$64.99", status: "Refunded" },
+    ];
+
+    const badge = {
+      Paid: "bg-emerald-100 text-emerald-700",
+      Pending: "bg-amber-100 text-amber-700",
+      Refunded: "bg-rose-100 text-rose-700",
+    };
+
+    function Sidebar({ active, onSelect }) {
+      const items = [
+        ["Dashboard", "fa-chart-line"],
+        ["Orders", "fa-shopping-cart"],
+        ["Customers", "fa-user-friends"],
+        ["Settings", "fa-cog"],
+      ];
+      return (
+        <aside className="hidden md:flex w-60 flex-col bg-slate-900 text-slate-300 p-4">
+          <div className="flex items-center gap-2 text-white text-lg font-semibold mb-8">
+            <i className="fas fa-cube text-indigo-400"></i> Acme Analytics
+          </div>
+          <nav className="space-y-1">
+            {items.map(([name, icon]) => (
+              <button
+                key={name}
+                onClick={() => onSelect(name)}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left ${
+                  active === name ? "bg-indigo-600 text-white" : "hover:bg-slate-800"
+                }`}
+              >
+                <i className={`fas ${icon} w-4`}></i> {name}
+              </button>
+            ))}
+          </nav>
+        </aside>
+      );
+    }
+
+    function App() {
+      const [active, setActive] = useState("Dashboard");
+      return (
+        <div className="min-h-screen flex">
+          <Sidebar active={active} onSelect={setActive} />
+          <main className="flex-1 p-6 md:p-10">
+            <header className="flex items-center justify-between mb-8">
+              <div>
+                <h1 className="text-2xl font-bold">{active}</h1>
+                <p className="text-sm text-slate-500" data-testid="fixture-marker">
+                  S2C_FIXTURE_7f3a9c1e_REACT_TAILWIND
+                </p>
+              </div>
+              <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg shadow">
+                <i className="fas fa-plus mr-2"></i>New report
+              </button>
+            </header>
+
+            <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
+              {stats.map((s) => (
+                <div key={s.label} className="bg-white rounded-xl shadow-sm p-5">
+                  <div className="flex items-center justify-between text-slate-500 text-sm">
+                    {s.label}
+                    <i className={`fas ${s.icon}`}></i>
+                  </div>
+                  <div className="mt-2 text-2xl font-semibold">{s.value}</div>
+                  <div className={`mt-1 text-sm ${s.up ? "text-emerald-600" : "text-rose-600"}`}>
+                    {s.delta} vs last month
+                  </div>
+                </div>
+              ))}
+            </section>
+
+            <section className="bg-white rounded-xl shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b font-semibold">Recent orders</div>
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-slate-500">
+                  <tr>
+                    <th className="text-left px-5 py-3">Order</th>
+                    <th className="text-left px-5 py-3">Customer</th>
+                    <th className="text-left px-5 py-3">Total</th>
+                    <th className="text-left px-5 py-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orders.map((o) => (
+                    <tr key={o.id} className="border-t">
+                      <td className="px-5 py-3 font-mono">{o.id}</td>
+                      <td className="px-5 py-3">{o.customer}</td>
+                      <td className="px-5 py-3">{o.total}</td>
+                      <td className="px-5 py-3">
+                        <span className={`px-2 py-1 rounded-full text-xs ${badge[o.status]}`}>{o.status}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
