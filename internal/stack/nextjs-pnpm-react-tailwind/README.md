@@ -1,4 +1,4 @@
-# nextjs-react-tailwind-pnpm
+# nextjs-pnpm-react-tailwind
 
 Phase-2 target stack: turns a single-file **React + Tailwind mock**
 (`react_tailwind` source stack: React 18 UMD + Babel standalone + Tailwind Play
@@ -76,7 +76,7 @@ docker run --rm -v "$PWD":/work -w /work \
 
 `tests/fixture/` holds a minimal worked example: `design/mock.html` and its
 hand-migrated `src/app/page.tsx` + `src/components/Counter.tsx`, rendering the
-marker `STACK-FIXTURE-MARKER nextjs-react-tailwind-pnpm`. It is test-only and
+marker `STACK-FIXTURE-MARKER nextjs-pnpm-react-tailwind`. It is test-only and
 not part of the overlay.
 
 ## Container image (`Dockerfile`)

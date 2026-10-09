@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Scaffold a nextjs-react-tailwind-pnpm app into an empty directory:
+# Scaffold a nextjs-pnpm-react-tailwind app into an empty directory:
 #
 #   scaffold.sh <dest-dir> <app-name> [sources-dir]
 #

@@ -1,5 +1,5 @@
 {
-  "name": "static-html-pnpm-app",
+  "name": "static-pnpm-html-app",
   "version": "0.1.0",
   "private": true,
   "description": "Serves a single self-contained HTML mock (public/index.html) on port 3000.",

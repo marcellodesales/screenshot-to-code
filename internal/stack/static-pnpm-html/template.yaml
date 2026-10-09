@@ -1,5 +1,5 @@
 # Template metadata. Mirrors this template's entry in ../catalog.yaml.
-id: static-html-pnpm
+id: static-pnpm-html
 name: Static HTML (pnpm)
 description: >-
   Serves the generated single-file HTML mock as-is (public/index.html) with a

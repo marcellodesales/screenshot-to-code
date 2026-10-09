@@ -1,6 +1,6 @@
 import type { NextConfig } from "next";
 
-// Overlay for create-next-app@16.4.0 (template nextjs-react-tailwind-pnpm).
+// Overlay for create-next-app@16.4.0 (template nextjs-pnpm-react-tailwind).
 // Keeps the scaffold's defaults and adds what the container image needs.
 const nextConfig: NextConfig = {
   // Emit .next/standalone (server.js + traced node_modules) for the Dockerfile

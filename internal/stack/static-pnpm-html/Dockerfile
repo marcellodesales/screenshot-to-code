@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# static-html-pnpm: serve one self-contained HTML mock (public/index.html) on :3000.
+# static-pnpm-html: serve one self-contained HTML mock (public/index.html) on :3000.
 #
 # Base image: node:22 on Alpine. The only runtime dependency (`serve`) is pure
 # JavaScript, so musl vs glibc does not matter and Alpine gives the smallest
@@ -34,7 +34,7 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 # ---------------------------------------------------------------------------
 FROM ${NODE_IMAGE} AS runtime
 
-LABEL org.opencontainers.image.title="static-html-pnpm" \
+LABEL org.opencontainers.image.title="static-pnpm-html" \
       org.opencontainers.image.description="Self-contained HTML mock served on port 3000 (screenshot-to-code stack generator)" \
       org.opencontainers.image.source="https://github.com/abi/screenshot-to-code" \
       org.opencontainers.image.licenses="MIT"

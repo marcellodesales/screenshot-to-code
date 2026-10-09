@@ -14,7 +14,7 @@ Traefik gateway — the same shape it would have as a Kubernetes Ingress host.
 ### What stays the same
 
 Generation (option 1, option 2, … streaming into the UI) is untouched. The new
-pipeline only starts when the user clicks **🚀 Generate backend** (next to
+pipeline only starts when the user clicks **🚀 Build app** (next to
 "Select & edit") on a finished generation.
 
 ## 2. Run workspace layout
@@ -54,8 +54,8 @@ internal/stack/
     ...                             # stack-specific skeleton files
 ```
 
-`<stack-id>` = `<runtime>-<ui>-<styling>-<build-system>`, lowercase, hyphenated,
-e.g. `static-html-pnpm`, `nextjs-react-tailwind-pnpm`.
+`<stack-id>` = `<runtime>-<build-system>-<ui>-<styling>`, lowercase, hyphenated,
+e.g. `static-pnpm-html`, `nextjs-pnpm-react-tailwind`.
 
 ## 4. Stack matrix
 
@@ -65,17 +65,17 @@ Source stacks are what the generator produces today
 
 | Source stack (mock) | Target template | Phase | pnpm | npm | bun |
 |---|---|---|---|---|---|
-| html_css | `static-html-<bs>` | 1 | ✅ P1 | later | later |
-| html_tailwind | `static-html-<bs>` | 1 | ✅ P1 | later | later |
-| react_tailwind | `static-html-<bs>` | 1 | ✅ P1 | later | later |
-| bootstrap | `static-html-<bs>` | 1 | ✅ P1 | later | later |
-| vue_tailwind | `static-html-<bs>` | 1 | ✅ P1 | later | later |
-| ionic_tailwind | `static-html-<bs>` | 1 | ✅ P1 | later | later |
-| react_tailwind | `nextjs-react-tailwind-<bs>` | 2 | ✅ P2 | later | later |
-| react_tailwind | `vite-react-tailwind-<bs>` | 3 | later | later | later |
-| html_tailwind | `vite-html-tailwind-<bs>` | 3 | later | later | later |
-| vue_tailwind | `nuxt-vue-tailwind-<bs>` | 3 | later | later | later |
-| ionic_tailwind | `vite-ionic-react-<bs>` | 3 | later | later | later |
+| html_css | `static-<bs>-html` | 1 | ✅ P1 | later | later |
+| html_tailwind | `static-<bs>-html` | 1 | ✅ P1 | later | later |
+| react_tailwind | `static-<bs>-html` | 1 | ✅ P1 | later | later |
+| bootstrap | `static-<bs>-html` | 1 | ✅ P1 | later | later |
+| vue_tailwind | `static-<bs>-html` | 1 | ✅ P1 | later | later |
+| ionic_tailwind | `static-<bs>-html` | 1 | ✅ P1 | later | later |
+| react_tailwind | `nextjs-<bs>-react-tailwind` | 2 | ✅ P2 | later | later |
+| react_tailwind | `vite-<bs>-react-tailwind` | 3 | later | later | later |
+| html_tailwind | `vite-<bs>-html-tailwind` | 3 | later | later | later |
+| vue_tailwind | `nuxt-<bs>-vue-tailwind` | 3 | later | later | later |
+| ionic_tailwind | `vite-<bs>-ionic-react` | 3 | later | later | later |
 | bootstrap / html_css | (static only) | — | — | — | — |
 
 Key observation: every mock is a self-contained `index.html`, so **one static
@@ -120,7 +120,7 @@ host Docker socket. That is root-equivalent on the host. Acceptable for local
 use; must be called out in the README and gated behind an env flag
 (`STACK_GENERATOR_ENABLED`) so the default install does not mount the socket.
 
-## 7. "🚀 Generate backend" pipeline (phase 2+ backend work)
+## 7. "🚀 Build app" pipeline (phase 2+ backend work)
 
 1. Create `data/runs/<run-id>/` (uploads + `op<N>/design/mock.html` are written
    at generation time, so this step only validates them).
@@ -140,7 +140,7 @@ the other.
 
 - Settings: new **Build system** select (`pnpm` default, `npm`, `bun` — only
   values with a catalog entry for the current source stack are enabled).
-- "🚀 Generate backend" button next to "Select & edit"; shows per-option
+- "🚀 Build app" button next to "Select & edit"; shows per-option
   progress and the resulting URL.
 
 ## 9. Testing
@@ -155,8 +155,8 @@ the other.
 
 ## 10. Phases
 
-1. Gateway + `static-html-pnpm` template, verified end-to-end behind Traefik.
-2. `nextjs-react-tailwind-pnpm` template (production Dockerfile: multi-stage,
+1. Gateway + `static-pnpm-html` template, verified end-to-end behind Traefik.
+2. `nextjs-pnpm-react-tailwind` template (production Dockerfile: multi-stage,
    standalone output, non-root, pinned pnpm via corepack, cache mounts,
    healthcheck).
 3. Backend pipeline + run workspace + UI button/setting.

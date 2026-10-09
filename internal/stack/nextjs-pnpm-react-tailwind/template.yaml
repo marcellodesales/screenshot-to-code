@@ -1,5 +1,5 @@
 # Template metadata — mirrors this stack's entry in internal/stack/catalog.yaml.
-id: nextjs-react-tailwind-pnpm
+id: nextjs-pnpm-react-tailwind
 name: Next.js + React + Tailwind (pnpm)
 description: >-
   Production Next.js (App Router, TypeScript, Tailwind v4) app migrated from a
@@ -69,4 +69,4 @@ migration_targets:
 # NOT copied into generated apps; used only by the template test.
 test_fixture:
   dir: tests/fixture             # design/mock.html + hand-migrated src/
-  marker: STACK-FIXTURE-MARKER nextjs-react-tailwind-pnpm
+  marker: STACK-FIXTURE-MARKER nextjs-pnpm-react-tailwind
