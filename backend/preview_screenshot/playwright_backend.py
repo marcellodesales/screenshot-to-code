@@ -40,6 +40,23 @@ class PlaywrightBackend:
                 )
             return self._browser
 
+    async def get_browser(self) -> Browser:
+        """The shared browser, (re)launched on demand. Callers own their pages."""
+        return await self._get_browser()
+
+    async def close(self) -> None:
+        """Close the browser and stop Playwright (tests; graceful shutdown)."""
+        async with self._lock:
+            if self._browser is not None:
+                try:
+                    await self._browser.close()
+                except Exception:
+                    pass
+                self._browser = None
+            if self._playwright is not None:
+                await self._playwright.stop()
+                self._playwright = None
+
     async def available(self) -> bool:
         """Launch (and warm up) Chromium; report whether it works.
 
