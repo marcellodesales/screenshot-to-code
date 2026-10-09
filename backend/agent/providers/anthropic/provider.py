@@ -46,6 +46,18 @@ ADAPTIVE_THINKING_MODELS = {
     Llm.CLAUDE_FABLE_5_HIGH.value,
     Llm.CLAUDE_FABLE_5_XHIGH.value,
     Llm.CLAUDE_FABLE_5_MAX.value,
+    Llm.CLAUDE_FABLE_5_1_LOW.value,
+    Llm.CLAUDE_FABLE_5_1_MEDIUM.value,
+    Llm.CLAUDE_FABLE_5_1_HIGH.value,
+    Llm.CLAUDE_FABLE_5_1_XHIGH.value,
+    Llm.CLAUDE_FABLE_5_1_MAX.value,
+    Llm.CLAUDE_OPUS_5_5_LOW.value,
+    Llm.CLAUDE_OPUS_5_5_MEDIUM.value,
+    Llm.CLAUDE_OPUS_5_5_HIGH.value,
+    Llm.CLAUDE_OPUS_5_5_XHIGH.value,
+    Llm.CLAUDE_OPUS_5_5_MAX.value,
+    Llm.CLAUDE_SONNET_5_5.value,
+    Llm.CLAUDE_HAIKU_5_5.value,
     Llm.CLAUDE_SONNET_4_6.value,
 }
 
@@ -65,6 +77,20 @@ ANTHROPIC_MODEL_CONFIG: dict[Llm, dict[str, str]] = {
     Llm.CLAUDE_FABLE_5_HIGH: {"api_name": "claude-fable-5", "effort": "high"},
     Llm.CLAUDE_FABLE_5_XHIGH: {"api_name": "claude-fable-5", "effort": "xhigh"},
     Llm.CLAUDE_FABLE_5_MAX: {"api_name": "claude-fable-5", "effort": "max"},
+    Llm.CLAUDE_FABLE_5_1_LOW: {"api_name": "claude-fable-5-1", "effort": "low"},
+    Llm.CLAUDE_FABLE_5_1_MEDIUM: {"api_name": "claude-fable-5-1", "effort": "medium"},
+    Llm.CLAUDE_FABLE_5_1_HIGH: {"api_name": "claude-fable-5-1", "effort": "high"},
+    Llm.CLAUDE_FABLE_5_1_XHIGH: {"api_name": "claude-fable-5-1", "effort": "xhigh"},
+    Llm.CLAUDE_FABLE_5_1_MAX: {"api_name": "claude-fable-5-1", "effort": "max"},
+    Llm.CLAUDE_OPUS_5_5_LOW: {"api_name": "claude-opus-5-5", "effort": "low"},
+    Llm.CLAUDE_OPUS_5_5_MEDIUM: {"api_name": "claude-opus-5-5", "effort": "medium"},
+    Llm.CLAUDE_OPUS_5_5_HIGH: {"api_name": "claude-opus-5-5", "effort": "high"},
+    Llm.CLAUDE_OPUS_5_5_XHIGH: {"api_name": "claude-opus-5-5", "effort": "xhigh"},
+    Llm.CLAUDE_OPUS_5_5_MAX: {"api_name": "claude-opus-5-5", "effort": "max"},
+    # Sonnet/Haiku 5.5 reject sampling params, so they run adaptive thinking
+    # at an explicit effort (the Sonnet 4.6 default).
+    Llm.CLAUDE_SONNET_5_5: {"api_name": "claude-sonnet-5-5", "effort": "high"},
+    Llm.CLAUDE_HAIKU_5_5: {"api_name": "claude-haiku-5-5", "effort": "high"},
 }
 
 

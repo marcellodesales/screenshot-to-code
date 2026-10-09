@@ -328,3 +328,12 @@ async def test_default_migration_llm_prefers_anthropic(
     await llm("S", "U")
     assert seen[2]["model"] in GEMINI_MODELS
     assert seen[2]["tools_enabled"] is False
+
+
+def test_migration_models_use_the_current_generation_per_provider() -> None:
+    from llm import Llm
+    from stack_generator import migrate
+
+    assert migrate.ANTHROPIC_MIGRATION_MODEL == Llm.CLAUDE_OPUS_5_5_MEDIUM
+    assert migrate.OPENAI_MIGRATION_MODEL == Llm.GPT_5_6_SOL_HIGH
+    assert migrate.GEMINI_MIGRATION_MODEL == Llm.GEMINI_3_8_FLASH_HIGH

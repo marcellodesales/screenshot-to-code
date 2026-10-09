@@ -24,10 +24,10 @@ class TestModelSelectionAllKeys:
         )
 
         expected = [
-            Llm.GEMINI_3_FLASH_PREVIEW_MINIMAL,
+            Llm.CLAUDE_FABLE_5_1_HIGH,
             Llm.GPT_5_6_SOL_HIGH,
-            Llm.CLAUDE_OPUS_5_HIGH,
-            Llm.GEMINI_3_1_PRO_PREVIEW_LOW,
+            Llm.GEMINI_3_8_FLASH_HIGH,
+            Llm.CLAUDE_OPUS_5_5_MEDIUM,
         ]
         assert models == expected
 
@@ -43,16 +43,16 @@ class TestModelSelectionAllKeys:
         )
 
         expected = [
-            Llm.CLAUDE_OPUS_5_MEDIUM,
-            Llm.GEMINI_3_FLASH_PREVIEW_HIGH,
+            Llm.CLAUDE_FABLE_5_1_HIGH,
             Llm.GEMINI_3_1_PRO_PREVIEW_HIGH,
-            Llm.GPT_5_6_SOL_MAX,
+            Llm.GPT_5_6_SOL_HIGH,
+            Llm.CLAUDE_OPUS_5_5_MEDIUM,
         ]
         assert models == expected
 
     @pytest.mark.asyncio
     async def test_gemini_anthropic_update_text(self):
-        """All keys text update: uses two fast edit variants."""
+        """All keys text update: Claude and GPT so the two options differ."""
         models = await self.model_selector.select_models(
             generation_type="update",
             input_mode="text",
@@ -62,14 +62,14 @@ class TestModelSelectionAllKeys:
         )
 
         expected = [
-            Llm.GEMINI_3_FLASH_PREVIEW_MINIMAL,
-            Llm.GPT_5_6_TERRA_LOW,
+            Llm.CLAUDE_OPUS_5_5_MEDIUM,
+            Llm.GPT_5_6_SOL_HIGH,
         ]
         assert models == expected
 
     @pytest.mark.asyncio
     async def test_gemini_anthropic_update(self):
-        """All keys image update: uses two fast edit variants."""
+        """All keys image update: Claude and GPT so the two options differ."""
         models = await self.model_selector.select_models(
             generation_type="update",
             input_mode="image",
@@ -79,8 +79,8 @@ class TestModelSelectionAllKeys:
         )
 
         expected = [
-            Llm.GEMINI_3_FLASH_PREVIEW_MINIMAL,
-            Llm.GPT_5_6_TERRA_LOW,
+            Llm.CLAUDE_OPUS_5_5_MEDIUM,
+            Llm.GPT_5_6_SOL_HIGH,
         ]
         assert models == expected
 
@@ -129,7 +129,7 @@ class TestModelSelectionOpenAIAnthropic:
 
     @pytest.mark.asyncio
     async def test_openai_anthropic(self):
-        """OpenAI + Anthropic: Claude Opus 4.8 medium, GPT 5.5 high, GPT 5.5 low, cycling"""
+        """OpenAI + Anthropic: Claude Opus 5.5 medium, GPT 5.5 high, GPT 5.5 low, cycling"""
         models = await self.model_selector.select_models(
             generation_type="create",
             input_mode="text",
@@ -139,12 +139,70 @@ class TestModelSelectionOpenAIAnthropic:
         )
 
         expected = [
-            Llm.CLAUDE_OPUS_4_8_MEDIUM,
+            Llm.CLAUDE_OPUS_5_5_MEDIUM,
             Llm.GPT_5_5_HIGH,
             Llm.GPT_5_5_LOW,
-            Llm.CLAUDE_OPUS_4_8_MEDIUM,
+            Llm.CLAUDE_OPUS_5_5_MEDIUM,
         ]
         assert models == expected
+
+
+class TestModelSelectionGeminiSubsets:
+    """Key subsets that include Gemini use the 3.8 Flash generation."""
+
+    @pytest.mark.asyncio
+    async def test_gemini_anthropic(self):
+        model_selector = ModelSelectionStage(AsyncMock())
+        models = await model_selector.select_models(
+            generation_type="create",
+            input_mode="text",
+            openai_api_key=None,
+            anthropic_api_key="key",
+            gemini_api_key="key",
+        )
+
+        assert models == [
+            Llm.GEMINI_3_8_FLASH_MINIMAL,
+            Llm.GEMINI_3_1_PRO_PREVIEW_LOW,
+            Llm.CLAUDE_OPUS_5_5_MEDIUM,
+            Llm.GEMINI_3_8_FLASH_HIGH,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_gemini_openai(self):
+        model_selector = ModelSelectionStage(AsyncMock())
+        models = await model_selector.select_models(
+            generation_type="create",
+            input_mode="text",
+            openai_api_key="key",
+            anthropic_api_key=None,
+            gemini_api_key="key",
+        )
+
+        assert models == [
+            Llm.GEMINI_3_8_FLASH_MINIMAL,
+            Llm.GEMINI_3_1_PRO_PREVIEW_LOW,
+            Llm.GPT_5_5_HIGH,
+            Llm.GPT_5_5_LOW,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_gemini_only(self):
+        model_selector = ModelSelectionStage(AsyncMock())
+        models = await model_selector.select_models(
+            generation_type="create",
+            input_mode="text",
+            openai_api_key=None,
+            anthropic_api_key=None,
+            gemini_api_key="key",
+        )
+
+        assert models == [
+            Llm.GEMINI_3_8_FLASH_MINIMAL,
+            Llm.GEMINI_3_1_PRO_PREVIEW_LOW,
+            Llm.GEMINI_3_8_FLASH_HIGH,
+            Llm.GEMINI_3_1_PRO_PREVIEW_HIGH,
+        ]
 
 
 class TestModelSelectionAnthropicOnly:
@@ -157,7 +215,7 @@ class TestModelSelectionAnthropicOnly:
 
     @pytest.mark.asyncio
     async def test_anthropic_only(self):
-        """Anthropic only: Claude Opus 4.8 medium and Claude Sonnet 4.6 cycling"""
+        """Anthropic only: Claude Opus 5.5 medium and Claude Sonnet 5.5 cycling"""
         models = await self.model_selector.select_models(
             generation_type="create",
             input_mode="text",
@@ -167,10 +225,10 @@ class TestModelSelectionAnthropicOnly:
         )
 
         expected = [
-            Llm.CLAUDE_OPUS_4_8_MEDIUM,
-            Llm.CLAUDE_SONNET_4_6,
-            Llm.CLAUDE_OPUS_4_8_MEDIUM,
-            Llm.CLAUDE_SONNET_4_6,
+            Llm.CLAUDE_OPUS_5_5_MEDIUM,
+            Llm.CLAUDE_SONNET_5_5,
+            Llm.CLAUDE_OPUS_5_5_MEDIUM,
+            Llm.CLAUDE_SONNET_5_5,
         ]
         assert models == expected
 
