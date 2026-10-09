@@ -16,14 +16,18 @@ option and width plus ``qa.json`` (the ``visualQa`` websocket payload).
 import asyncio
 import io
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
+from urllib.parse import urlsplit, urlunsplit
 
 from PIL import Image, ImageChops, ImageStat
 from playwright.async_api import (
     BrowserContext,
     Page,
+    Request,
+    Route,
     TimeoutError as PlaywrightTimeoutError,
 )
 
@@ -49,6 +53,7 @@ RENDER_SETTLE_MS = 250
 RESIZE_SETTLE_MS = 150
 QA_DIR_NAME = "qa"
 QA_JSON = "qa.json"
+DEFAULT_GATEWAY_INTERNAL_URL = "http://host.docker.internal:3311"
 
 # Measures one viewport: horizontal overflow, and the horizontal extent of
 # what is actually painted (text, media/controls, elements with their own
@@ -310,9 +315,53 @@ class _HtmlLoader:
             pass  # Render whatever loaded (e.g. pages that keep polling).
 
 
+class _GatewayLoader:
+    """Loads ``http://<host>/`` through the gateway with ``Host: <host>``.
+
+    Chromium refuses to override the Host header, so requests for the app host
+    are fetched by Playwright from the gateway with the header set and
+    fulfilled back into the page; other origins (CDNs) go out untouched.
+    """
+
+    def __init__(self, gateway_url: str, host: str) -> None:
+        self._gateway = gateway_url.rstrip("/")
+        self._host = host
+
+    async def __call__(self, context: BrowserContext, page: Page) -> None:
+        async def proxy(route: Route, request: Request) -> None:
+            parts = urlsplit(request.url)
+            if parts.hostname != self._host:
+                await route.continue_()
+                return
+            target = self._gateway + urlunsplit(("", "", parts.path or "/", parts.query, ""))
+            response = await route.fetch(
+                url=target, headers={**request.headers, "host": self._host}
+            )
+            await route.fulfill(response=response)
+
+        await context.route("**/*", proxy)
+        try:
+            response = await page.goto(
+                f"http://{self._host}/",
+                wait_until="networkidle",
+                timeout=PAGE_LOAD_TIMEOUT_MS,
+            )
+        except PlaywrightTimeoutError:
+            return
+        if response is not None and response.status >= 400:
+            raise RuntimeError(f"The app answered HTTP {response.status}")
+
+
 async def capture(html: str, widths: tuple[int, ...] = QA_WIDTHS) -> CaptureResult:
     """Render ``html`` at each width (height 900; full page at 1280)."""
     return await _render(widths, _HtmlLoader(html))
+
+
+async def capture_url(
+    gateway_url: str, host: str, widths: tuple[int, ...] = QA_WIDTHS
+) -> CaptureResult:
+    """Render a running app reached through the gateway as ``Host: <host>``."""
+    return await _render(widths, _GatewayLoader(gateway_url, host))
 
 
 # -- version QA -------------------------------------------------------------------
@@ -408,3 +457,61 @@ async def run_version_qa(workspace: RunWorkspace, ui_commit_hash: str) -> dict[s
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def gateway_internal_url() -> str:
+    # Read at call time so tests (and late env changes) take effect.
+    return os.environ.get("GATEWAY_INTERNAL_URL", DEFAULT_GATEWAY_INTERNAL_URL)
+
+
+async def _mock_thumbnail(
+    workspace: RunWorkspace, ui_commit_hash: str, option_index: int
+) -> bytes | None:
+    """The mock's 1280 screenshot from version QA, rendered now if missing."""
+    number = option_index + 1
+    path = qa_dir(workspace, ui_commit_hash) / f"op{number}-{THUMBNAIL_WIDTH}.png"
+    if path.is_file():
+        return await asyncio.to_thread(path.read_bytes)
+    codes = await asyncio.to_thread(workspace.option_codes, ui_commit_hash)
+    if option_index >= len(codes):
+        return None
+    result = await capture(codes[option_index], widths=(THUMBNAIL_WIDTH,))
+    if result.thumbnail is not None:
+        await asyncio.to_thread(
+            _write_pngs, qa_dir(workspace, ui_commit_hash), "", number, result
+        )
+    return result.thumbnail
+
+
+async def app_qa(
+    workspace: RunWorkspace, ui_commit_hash: str, option_index: int, app_host: str
+) -> dict[str, Any]:
+    """Screenshot a running app through the gateway and compare it with its mock.
+
+    Returns the ``OptionStatus`` QA fields: ``screenshot`` (URL of
+    ``app-op<N>-1280.png``), ``parity`` (similarity to the mock's 1280
+    screenshot), ``responsive`` and ``render_ok``.
+    """
+    _require_version(workspace, ui_commit_hash)
+    number = option_index + 1
+    result = await capture_url(gateway_internal_url(), app_host)
+    app_thumbnail = result.thumbnail
+    screenshot: str | None = None
+    if app_thumbnail is not None:
+        file_name = f"app-op{number}-{THUMBNAIL_WIDTH}.png"
+        directory = qa_dir(workspace, ui_commit_hash)
+        await asyncio.to_thread(directory.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread((directory / file_name).write_bytes, app_thumbnail)
+        screenshot = qa_url(workspace.run_id, ui_commit_hash, file_name)
+    mock_thumbnail = await _mock_thumbnail(workspace, ui_commit_hash, option_index)
+    parity = (
+        round(similarity(mock_thumbnail, app_thumbnail), 4)
+        if mock_thumbnail is not None and app_thumbnail is not None
+        else None
+    )
+    return {
+        "screenshot": screenshot,
+        "parity": parity,
+        "responsive": result.responsive(),
+        "render_ok": result.render_ok,
+    }

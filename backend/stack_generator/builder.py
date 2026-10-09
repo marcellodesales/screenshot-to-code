@@ -5,6 +5,10 @@ mock, write ``.env``; then one ``commit_app`` for every prepared option; then
 ``docker compose up -d --build --wait`` per option. Options run concurrently
 and one option failing never stops the others.
 
+Only the requested options are built; by default every option that visual QA
+(``qa/<ui-commit-hash>/qa.json``) didn't mark as a duplicate. Once an app is up
+it is screenshotted through the gateway and compared with its mock (parity).
+
 Docker runs against the host daemon through the mounted socket, so nothing
 here relies on bind mounts (spec §7.1).
 """
@@ -15,8 +19,9 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable, Literal, Protocol
+from typing import Any, Awaitable, Callable, Literal, Protocol, cast
 
+from stack_generator import visual_qa
 from stack_generator.catalog import StackTemplate, load_catalog, resolve_template
 from stack_generator.migrate import (
     MigrationLlm,
@@ -34,6 +39,7 @@ CommandRunner = Callable[[list[str], Path], Awaitable[str]]
 
 GATEWAY_PORT = 3311
 COMMAND_TIMEOUT_SECONDS = 15 * 60
+APP_QA_TIMEOUT_SECONDS = 90
 _ERROR_LIMIT = 2000
 _FIRST_BUILD_MESSAGE = ":tada: First version"
 # Each build commit is pinned as refs/s2c/builds/<k> (k = 1, 2, ...).
@@ -50,6 +56,18 @@ class MigrationLlmFactory(Protocol):
     ) -> MigrationLlm: ...
 
 
+class AppQa(Protocol):
+    """Screenshots a running app and compares it with its mock (``visual_qa.app_qa``)."""
+
+    async def __call__(
+        self,
+        workspace: RunWorkspace,
+        ui_commit_hash: str,
+        option_index: int,
+        app_host: str,
+    ) -> dict[str, Any]: ...
+
+
 @dataclass
 class OptionStatus:
     index: int
@@ -57,6 +75,11 @@ class OptionStatus:
     step_message: str
     url: str | None
     error: str | None
+    # Visual QA of the running app (None until checked, or if it couldn't be).
+    screenshot: str | None = None
+    parity: float | None = None
+    responsive: dict[str, Any] | None = None
+    render_ok: bool | None = None
 
 
 @dataclass
@@ -128,6 +151,36 @@ def _copy_static_template(template: StackTemplate, app_dir: Path) -> None:
     )
 
 
+def _default_options(
+    workspace: RunWorkspace, ui_commit_hash: str, option_count: int
+) -> list[int]:
+    """Every option, minus those visual QA marked as duplicates."""
+    qa = visual_qa.read_qa(workspace, ui_commit_hash)
+    duplicates: set[int] = set()
+    raw: Any = qa.get("options") if qa else None
+    entries = cast(list[Any], raw) if isinstance(raw, list) else []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        option = cast(dict[str, Any], entry)
+        index = option.get("index")
+        if isinstance(index, int) and option.get("duplicateOf") is not None:
+            duplicates.add(index)
+    selected = [i for i in range(option_count) if i not in duplicates]
+    return selected or list(range(option_count))
+
+
+def _checked_options(options: list[int], option_count: int) -> list[int]:
+    if not options:
+        raise ValueError("Select at least one option to build")
+    if len(set(options)) != len(options):
+        raise ValueError("Options must not repeat")
+    for index in options:
+        if not 0 <= index < option_count:
+            raise ValueError(f"Unknown option {index} (this version has {option_count})")
+    return sorted(options)
+
+
 def _git(workspace: RunWorkspace, *args: str) -> str:
     return subprocess.run(
         ["git", "-c", "safe.directory=*", *args],
@@ -171,8 +224,10 @@ class BuildManager:
         *,
         runs_dir: Path | None = None,
         templates_dir: Path | None = None,
+        app_qa: AppQa | None = None,
     ) -> None:
         self._runner = runner
+        self._app_qa: AppQa = app_qa if app_qa is not None else visual_qa.app_qa
         self._llm_factory = llm_factory
         self._runs_dir = runs_dir
         self._templates_dir = templates_dir
@@ -188,11 +243,15 @@ class BuildManager:
         ui_commit_hash: str,
         build_system: str,
         api_keys: dict[str, str | None],
+        options: list[int] | None = None,
     ) -> BuildJob:
         """Start a build; while one is in progress for the run, return it.
 
+        ``options`` are 0-based option indices; ``None`` builds every option
+        visual QA didn't mark as a duplicate (all of them without QA).
         Raises ``LookupError`` for an unknown run/version and ``ValueError``
-        when no template fits the source stack + build system. No ``await``
+        when no template fits the source stack + build system or the options
+        are invalid. No ``await``
         happens between the in-progress check and registering the job, so two
         concurrent requests can never start two builds of one run.
         """
@@ -212,6 +271,11 @@ class BuildManager:
             load_catalog(self._templates_dir),
         )
         option_count = len(workspace.option_codes(ui_commit_hash))
+        indices = (
+            _default_options(workspace, ui_commit_hash, option_count)
+            if options is None
+            else _checked_options(options, option_count)
+        )
         job = BuildJob(
             run_id=run_id,
             ui_commit_hash=ui_commit_hash,
@@ -219,7 +283,7 @@ class BuildManager:
             template_id=template.id,
             options=[
                 OptionStatus(index=i, state="queued", step_message="Queued", url=None, error=None)
-                for i in range(option_count)
+                for i in indices
             ],
         )
         slug = app_slug_from_prompt(str(metadata.get("prompt") or ""), run_id)
@@ -384,7 +448,32 @@ class BuildManager:
             return
         app_id = app_id_for(job.run_id, option.index)
         option.url = f"http://{app_id}.localhost:{GATEWAY_PORT}/"
-        self._set(option, "running", "Running")
+        # Checked before flipping to "running" so a client that stops polling
+        # once every option is running/failed still sees the result.
+        option.step_message = "Comparing the app with its mock"
+        message = await self._check_app(job, option, f"{app_id}.localhost")
+        self._set(option, "running", message)
+
+    async def _check_app(self, job: BuildJob, option: OptionStatus, app_host: str) -> str:
+        """Best-effort app screenshot + parity; returns the running step message."""
+        workspace = RunWorkspace.open(job.run_id, self._runs_dir)
+        if workspace is None:
+            return "Running"
+        try:
+            result = await asyncio.wait_for(
+                self._app_qa(workspace, job.ui_commit_hash, option.index, app_host),
+                timeout=APP_QA_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # incl. timeouts: QA never fails a build
+            print(f"[BUILD] App QA skipped for option {option.index + 1}: {exc}")
+            return "Running"
+        option.screenshot = result.get("screenshot")
+        option.parity = result.get("parity")
+        option.responsive = result.get("responsive")
+        option.render_ok = result.get("render_ok")
+        if option.parity is not None and option.parity < visual_qa.PARITY_WARNING:
+            return f"Running — differs from mock (parity {option.parity:.2f})"
+        return "Running"
 
     # -- state helpers -------------------------------------------------------
 

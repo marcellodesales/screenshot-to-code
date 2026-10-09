@@ -25,6 +25,8 @@ class StartBuildRequest(BaseModel):
     openai_api_key: str | None = Field(default=None, alias="openAiApiKey")
     anthropic_api_key: str | None = Field(default=None, alias="anthropicApiKey")
     gemini_api_key: str | None = Field(default=None, alias="geminiApiKey")
+    # 0-based option indices; absent = every option QA didn't mark a duplicate.
+    options: list[int] | None = None
 
 
 def _require_enabled() -> None:
@@ -45,7 +47,9 @@ async def start_build(run_id: str, body: StartBuildRequest) -> dict[str, Any]:
         "gemini_api_key": body.gemini_api_key or config.GEMINI_API_KEY,
     }
     try:
-        job = build_manager.start(run_id, body.commit_hash, body.build_system, api_keys)
+        job = build_manager.start(
+            run_id, body.commit_hash, body.build_system, api_keys, options=body.options
+        )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc).strip("'\""))
     except ValueError as exc:

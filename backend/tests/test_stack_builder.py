@@ -5,6 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from typing import Any
+
+from stack_generator import visual_qa
 from stack_generator.builder import BuildManager
 from stack_generator.migrate import MigrationLlm
 from stack_generator.workspace import RunWorkspace, new_run_id
@@ -42,6 +45,40 @@ class FakeRunner:
 
     def compose_calls(self) -> list[tuple[list[str], Path]]:
         return [(argv, cwd) for argv, cwd in self.calls if argv[:2] == ["docker", "compose"]]
+
+
+class FakeAppQa:
+    """Stands in for screenshotting a running app (see test_visual_qa)."""
+
+    def __init__(self, parity: float = 0.95) -> None:
+        self.calls: list[tuple[str, str, int, str]] = []
+        self.parity = parity
+        self.error: Exception | None = None
+
+    async def __call__(
+        self,
+        workspace: RunWorkspace,
+        ui_commit_hash: str,
+        option_index: int,
+        app_host: str,
+    ) -> dict[str, Any]:
+        self.calls.append((workspace.run_id, ui_commit_hash, option_index, app_host))
+        if self.error is not None:
+            raise self.error
+        return {
+            "screenshot": f"/api/runs/{workspace.run_id}/qa/{ui_commit_hash}/app-op{option_index + 1}-1280.png",
+            "parity": self.parity,
+            "responsive": {"pass": True, "widths": []},
+            "render_ok": True,
+        }
+
+
+@pytest.fixture(autouse=True)
+def default_app_qa(monkeypatch: pytest.MonkeyPatch) -> FakeAppQa:
+    """Builds in these tests never reach a real gateway."""
+    fake = FakeAppQa()
+    monkeypatch.setattr(visual_qa, "app_qa", fake)
+    return fake
 
 
 def _no_llm_factory(**_: str | None) -> MigrationLlm:
@@ -249,3 +286,134 @@ def test_start_rejects_unknown_run_and_version(tmp_path: Path) -> None:
         manager.start(workspace.run_id, "nope", "pnpm", {})
     with pytest.raises(ValueError):
         manager.start(workspace.run_id, "h1", "bun", {})
+
+
+def _write_qa(workspace: RunWorkspace, duplicate_of: list[int | None]) -> None:
+    qa = workspace.path / "qa" / "h1"
+    qa.mkdir(parents=True)
+    options: list[dict[str, Any]] = [
+        {"index": i, "duplicateOf": dup, "renderOk": True}
+        for i, dup in enumerate(duplicate_of)
+    ]
+    (qa / "qa.json").write_text(
+        json.dumps({"commitHash": "h1", "options": options}), encoding="utf-8"
+    )
+
+
+def _manager(tmp_path: Path, runner: FakeRunner, app_qa: FakeAppQa | None = None) -> BuildManager:
+    return BuildManager(
+        runner=runner,
+        llm_factory=_no_llm_factory,
+        runs_dir=tmp_path,
+        app_qa=app_qa or FakeAppQa(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_only_selected_options(tmp_path: Path) -> None:
+    workspace = _make_run(
+        tmp_path, source_stack="html_css", codes=[STATIC_MOCK, STATIC_MOCK, STATIC_MOCK]
+    )
+    runner = FakeRunner()
+    manager = _manager(tmp_path, runner)
+
+    job = manager.start(workspace.run_id, "h1", "pnpm", {}, options=[1])
+    await manager.wait(workspace.run_id)
+
+    assert [option.index for option in job.options] == [1]
+    assert job.options[0].state == "running"
+    assert [cwd.parent.name for _, cwd in runner.compose_calls()] == ["op2"]
+    assert not (workspace.path / "op1" / "app").exists()
+
+
+@pytest.mark.asyncio
+async def test_default_options_skip_qa_duplicates(tmp_path: Path) -> None:
+    workspace = _make_run(
+        tmp_path, source_stack="html_css", codes=[STATIC_MOCK, STATIC_MOCK, STATIC_MOCK]
+    )
+    _write_qa(workspace, [None, 0, None])
+    runner = FakeRunner()
+    manager = _manager(tmp_path, runner)
+
+    job = manager.start(workspace.run_id, "h1", "pnpm", {})
+    await manager.wait(workspace.run_id)
+
+    assert [option.index for option in job.options] == [0, 2]
+    assert sorted(cwd.parent.name for _, cwd in runner.compose_calls()) == ["op1", "op3"]
+
+
+@pytest.mark.asyncio
+async def test_default_options_without_qa_build_all(tmp_path: Path) -> None:
+    workspace = _make_run(tmp_path, source_stack="html_css", codes=[STATIC_MOCK, STATIC_MOCK])
+    (workspace.path / "qa" / "h1").mkdir(parents=True)
+    (workspace.path / "qa" / "h1" / "qa.json").write_text("not json", encoding="utf-8")
+    manager = _manager(tmp_path, FakeRunner())
+
+    job = manager.start(workspace.run_id, "h1", "pnpm", {})
+    await manager.wait(workspace.run_id)
+
+    assert [option.index for option in job.options] == [0, 1]
+
+
+def test_start_rejects_bad_options(tmp_path: Path) -> None:
+    workspace = _make_run(tmp_path, source_stack="html_css", codes=[STATIC_MOCK, STATIC_MOCK])
+    manager = _manager(tmp_path, FakeRunner())
+    for options in ([], [2], [-1], [0, 0]):
+        with pytest.raises(ValueError):
+            manager.start(workspace.run_id, "h1", "pnpm", {}, options=options)
+    assert manager.get(workspace.run_id) is None
+
+
+@pytest.mark.asyncio
+async def test_running_option_gets_app_screenshot_and_parity(tmp_path: Path) -> None:
+    workspace = _make_run(tmp_path, source_stack="html_css", codes=[STATIC_MOCK, STATIC_MOCK])
+    app_qa = FakeAppQa(parity=0.95)
+    manager = _manager(tmp_path, FakeRunner(), app_qa)
+
+    job = manager.start(workspace.run_id, "h1", "pnpm", {}, options=[1])
+    queued = job.options[0]
+    assert (queued.screenshot, queued.parity, queued.responsive, queued.render_ok) == (
+        None, None, None, None,
+    )
+    await manager.wait(workspace.run_id)
+
+    option = job.options[0]
+    app_id = workspace.run_id.replace("_", "-") + "-op2"
+    assert app_qa.calls == [(workspace.run_id, "h1", 1, f"{app_id}.localhost")]
+    assert option.state == "running"
+    assert option.step_message == "Running"
+    assert option.screenshot == f"/api/runs/{workspace.run_id}/qa/h1/app-op2-1280.png"
+    assert option.parity == 0.95
+    assert option.responsive == {"pass": True, "widths": []}
+    assert option.render_ok is True
+
+
+@pytest.mark.asyncio
+async def test_low_parity_warns_but_keeps_running(tmp_path: Path) -> None:
+    workspace = _make_run(tmp_path, source_stack="html_css", codes=[STATIC_MOCK])
+    manager = _manager(tmp_path, FakeRunner(), FakeAppQa(parity=0.4234))
+
+    job = manager.start(workspace.run_id, "h1", "pnpm", {})
+    await manager.wait(workspace.run_id)
+
+    option = job.options[0]
+    assert option.state == "running"
+    assert option.step_message == "Running — differs from mock (parity 0.42)"
+    assert option.error is None
+
+
+@pytest.mark.asyncio
+async def test_app_qa_failure_keeps_running(tmp_path: Path) -> None:
+    workspace = _make_run(tmp_path, source_stack="html_css", codes=[STATIC_MOCK])
+    app_qa = FakeAppQa()
+    app_qa.error = RuntimeError("gateway unreachable")
+    manager = _manager(tmp_path, FakeRunner(), app_qa)
+
+    job = manager.start(workspace.run_id, "h1", "pnpm", {})
+    await manager.wait(workspace.run_id)
+
+    option = job.options[0]
+    assert option.state == "running"
+    assert option.step_message == "Running"
+    assert option.url is not None and option.error is None
+    assert (option.screenshot, option.parity, option.render_ok) == (None, None, None)

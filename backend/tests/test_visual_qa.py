@@ -2,8 +2,10 @@
 
 import io
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Iterator
 
 import pytest
 from PIL import Image
@@ -12,7 +14,9 @@ from preview_screenshot import registry
 from preview_screenshot.playwright_backend import PlaywrightBackend
 from stack_generator import visual_qa
 from stack_generator.visual_qa import (
+    app_qa,
     capture,
+    capture_url,
     is_blank,
     run_version_qa,
     similarity,
@@ -229,3 +233,68 @@ async def test_run_version_qa_raises_when_renderer_unavailable(
     with pytest.raises(RuntimeError):
         await run_version_qa(workspace, "h1")
     assert not (workspace.path / "qa" / "h1" / "qa.json").exists()
+
+
+# -- built apps through the gateway ----------------------------------------------
+
+
+class _HostRecordingHandler(BaseHTTPRequestHandler):
+    hosts: list[str] = []
+    body = GRID_PAGE.encode("utf-8")
+
+    def do_GET(self) -> None:  # noqa: N802 (http.server API)
+        type(self).hosts.append(self.headers.get("Host", ""))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(self.body)))
+        self.end_headers()
+        self.wfile.write(self.body)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+
+@pytest.fixture
+def gateway() -> Iterator[str]:
+    _HostRecordingHandler.hosts = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _HostRecordingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+    server.server_close()
+
+
+async def test_capture_url_sends_app_host_through_gateway(
+    chromium: None, gateway: str
+) -> None:
+    result = await capture_url(gateway, "run-x-op1.localhost")
+    assert result.render_ok, result.error
+    assert _HostRecordingHandler.hosts
+    assert set(_HostRecordingHandler.hosts) == {"run-x-op1.localhost"}
+
+
+async def test_app_qa_compares_app_with_mock(
+    chromium: None, gateway: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_URL", gateway)
+    workspace = _workspace(tmp_path, [GRID_PAGE, CARD_PAGE])
+    await run_version_qa(workspace, "h1")
+
+    same = await app_qa(workspace, "h1", 0, "run-x-op1.localhost")
+    assert same["screenshot"] == f"/api/runs/{workspace.run_id}/qa/h1/app-op1-1280.png"
+    assert (workspace.path / "qa/h1/app-op1-1280.png").is_file()
+    assert same["render_ok"] is True
+    assert same["parity"] >= 0.99
+    assert same["responsive"]["pass"] is True
+
+    # The app serves the grid; option 2's mock is the card. No prior version QA
+    # for it is needed: the mock is rendered on demand.
+    (workspace.path / "qa/h1/op2-1280.png").unlink()
+    different = await app_qa(workspace, "h1", 1, "run-x-op2.localhost")
+    assert different["parity"] < 0.8
+
+
+def test_default_gateway_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GATEWAY_INTERNAL_URL", raising=False)
+    assert visual_qa.gateway_internal_url() == "http://host.docker.internal:3311"
