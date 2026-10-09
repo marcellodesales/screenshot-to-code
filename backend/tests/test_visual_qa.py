@@ -3,6 +3,7 @@
 import io
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator
@@ -132,6 +133,77 @@ def test_similarity_is_foreground_aware_on_white_pages() -> None:
     assert similarity(blank, centred) < 0.2
 
 
+FIXTURES = Path(__file__).parent / "fixtures" / "visual_qa"
+
+Colour = tuple[int, int, int]
+# Distinct section designs: (background, [(left, top, width, height, colour)]).
+_SECTIONS: list[tuple[Colour, list[tuple[int, int, int, int, Colour]]]] = [
+    ((255, 255, 255), [(80, 80, 600, 120, (17, 24, 39)), (80, 240, 900, 30, (87, 83, 78))]),
+    ((253, 252, 251), [(80, 60, 340, 480, (61, 43, 31)), (470, 60, 340, 480, (5, 150, 105)),
+                       (860, 60, 340, 480, (61, 43, 31))]),
+    ((255, 255, 255), [(240, 100, 800, 60, (17, 24, 39)), (140, 220, 1000, 300, (180, 83, 9))]),
+    ((28, 25, 23), [(80, 80, 520, 400, (245, 245, 244)), (680, 80, 520, 400, (245, 245, 244))]),
+    ((255, 255, 255), [(80, 40, 1120, 40, (17, 24, 39)), (80, 120, 1120, 40, (120, 113, 108)),
+                       (80, 200, 1120, 40, (17, 24, 39)), (80, 280, 1120, 40, (120, 113, 108))]),
+    ((253, 252, 251), [(400, 120, 480, 360, (37, 99, 235))]),
+]
+_SECTION_HEIGHT = 600
+
+
+def _page_png(sections: list[int], extra: dict[int, int] | None = None) -> bytes:
+    """A long page stacking ``_SECTIONS`` (``extra``: position -> px taller)."""
+    heights = [_SECTION_HEIGHT + (extra or {}).get(i, 0) for i in range(len(sections))]
+    image = Image.new("RGB", (1280, sum(heights)), (255, 255, 255))
+    top = 0
+    for index, height in zip(sections, heights):
+        background, boxes = _SECTIONS[index]
+        image.paste(background, (0, top, 1280, top + height))
+        # A taller section pushes its lower content down (like a wrapped heading).
+        shift = height - _SECTION_HEIGHT
+        for left, box_top, width, box_height, colour in boxes:
+            y = top + box_top + (shift if box_top > 100 else 0)
+            image.paste(colour, (left, y, left + width, y + box_height))
+        top += height
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_similarity_tolerates_vertical_drift_on_a_real_page() -> None:
+    # A built Next.js app vs its mock (downscaled from 1280 px): one heading
+    # wraps differently, so everything below is shifted by ~130 px (2.4%).
+    mock = (FIXTURES / "drift-mock.png").read_bytes()
+    app = (FIXTURES / "drift-app.png").read_bytes()
+    assert similarity(mock, app) >= 0.85
+    assert similarity(app, mock) >= 0.85
+
+
+def test_similarity_tolerates_a_taller_section() -> None:
+    mock = _page_png([0, 1, 2, 3, 4, 5])
+    app = _page_png([0, 1, 2, 3, 4, 5], extra={1: 130})
+    assert similarity(mock, app) >= 0.9
+
+
+def test_similarity_missing_section_is_low() -> None:
+    mock = _page_png([0, 1, 2, 3, 4, 5])
+    app = _page_png([0, 1, 3, 4, 5])
+    assert similarity(mock, app) < 0.80
+    assert similarity(app, mock) < 0.80
+
+
+def test_similarity_much_shorter_page_is_low() -> None:
+    mock = _page_png([0, 1, 2, 3, 4, 5])
+    assert similarity(mock, _page_png([0, 1])) < 0.5
+
+
+def test_similarity_is_fast_on_long_pages() -> None:
+    mock = _page_png([0, 1, 2, 3, 4, 5, 0, 1, 2, 3])
+    app = _page_png([0, 1, 2, 3, 4, 5, 0, 1, 2, 3], extra={2: 130})
+    started = time.perf_counter()
+    similarity(mock, app)
+    assert time.perf_counter() - started < 1.0
+
+
 def test_is_blank_threshold() -> None:
     assert is_blank(_png((250, 250, 250)))
     image = Image.new("RGB", (100, 100), (255, 255, 255))
@@ -190,6 +262,15 @@ async def test_similarity_moved_narrower_card_on_white_page_is_low(
     )
     assert mock.thumbnail is not None and app.thumbnail is not None
     assert similarity(mock.thumbnail, app.thumbnail) < 0.80
+
+
+async def test_similarity_top_aligned_wider_card_is_low(chromium: None) -> None:
+    # The earlier real drift: the app's card is top-aligned and 30% wider.
+    mock = await capture(_pricing_card(), widths=(1280,))
+    app = await capture(_pricing_card(align="flex-start", width="31.2rem"), widths=(1280,))
+    assert mock.thumbnail is not None and app.thumbnail is not None
+    assert similarity(mock.thumbnail, app.thumbnail) < 0.80
+    assert similarity(app.thumbnail, mock.thumbnail) < 0.80
 
 
 async def test_similarity_blank_vs_card_is_low(chromium: None) -> None:

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
 from urllib.parse import urlsplit, urlunsplit
 
-from PIL import Image, ImageChops, ImageStat
+from PIL import Image, ImageChops, ImageFilter, ImageStat
 from playwright.async_api import (
     BrowserContext,
     Page,
@@ -47,9 +47,23 @@ PARITY_WARNING = 0.80
 BLANK_PIXEL_SHARE = 0.98
 BLANK_TOLERANCE = 8
 SIMILARITY_THUMBNAIL_WIDTH = 256
-# Foreground masks (for IoU) are compared at this coarser width so
-# anti-aliasing and faint shadow halos don't count as layout changes.
-SIMILARITY_MASK_WIDTH = 128
+# Foreground masks (for IoU) are compared at half that width so anti-aliasing
+# and faint shadow halos don't count as layout changes; the drift search runs
+# at a quarter of it (thumbnail heights are padded to a multiple of this).
+SIMILARITY_SCALE_STEP = 4
+# A band of one page may match the other this far up/down (share of the
+# taller page's height): tolerates text wrapping differently, not moved layout.
+SIMILARITY_MAX_DRIFT = 0.08
+# Weight floor (share of foreground) so bands without content still count.
+SIMILARITY_MIN_BAND_WEIGHT = 0.02
+# Page heights may differ down to this ratio before the score is penalised.
+SIMILARITY_HEIGHT_RATIO = 0.75
+# Local tolerance (~20 px at 1280) so text that rewraps or sits a few pixels
+# off still overlaps: foreground masks (128 px wide) are matched against the
+# other page's mask dilated by this many pixels, greys (256 px wide) are
+# box-blurred by SIMILARITY_BLUR_RADIUS before differencing.
+SIMILARITY_MASK_TOLERANCE = 2
+SIMILARITY_BLUR_RADIUS = 2
 # A pixel is foreground when a channel differs from the page background by more.
 FOREGROUND_TOLERANCE = 24
 
@@ -194,12 +208,6 @@ def _open(png: bytes) -> Image.Image:
     return Image.open(io.BytesIO(png))
 
 
-def _thumbnail(png: bytes, width: int) -> Image.Image:
-    image = _open(png).convert("RGB")
-    thumb_height = max(1, round(image.height * width / max(1, image.width)))
-    return image.resize((width, thumb_height), Image.Resampling.BILINEAR)
-
-
 def _background(image: Image.Image) -> tuple[int, int, int]:
     """The page's dominant colour (exact colours via a nearest-neighbour sample)."""
     sample = image.resize(
@@ -211,18 +219,6 @@ def _background(image: Image.Image) -> tuple[int, int, int]:
         return (255, 255, 255)
     _, color = max(colors, key=lambda item: item[0])
     return cast(tuple[int, int, int], color)
-
-
-def _padded(
-    image: Image.Image, height: int, color: tuple[int, int, int]
-) -> Image.Image:
-    if image.height == height:
-        return image
-    # Pad with the page's own background so a slightly taller page isn't
-    # penalised as if the extra strip were different content.
-    canvas = Image.new("RGB", (image.width, height), color)
-    canvas.paste(image, (0, 0))
-    return canvas
 
 
 def _foreground_mask(image: Image.Image, background: tuple[int, int, int]) -> Image.Image:
@@ -237,52 +233,139 @@ def _mask_count(mask: Image.Image) -> float:
     return float(ImageStat.Stat(mask).sum[0]) / 255.0
 
 
-def _prepared(
-    a: bytes, b: bytes, width: int
-) -> tuple[Image.Image, Image.Image, Image.Image, Image.Image]:
-    """Same-size thumbnails of both pages and their foreground masks."""
-    first, second = _thumbnail(a, width), _thumbnail(b, width)
-    first_bg, second_bg = _background(first), _background(second)
-    height = max(first.height, second.height)
-    first = _padded(first, height, first_bg)
-    second = _padded(second, height, second_bg)
-    return (
-        first,
-        second,
-        _foreground_mask(first, first_bg),
-        _foreground_mask(second, second_bg),
-    )
+def _grey_of(color: tuple[int, int, int]) -> int:
+    """The "L" value Pillow converts ``color`` to (ITU-R 601-2 luma)."""
+    red, green, blue = color
+    return (red * 299 + green * 587 + blue * 114) // 1000
 
 
-def similarity(a: bytes, b: bytes) -> float:
-    """Foreground-aware similarity of two screenshots in [0, 1] (1 = identical).
+@dataclass
+class _Page:
+    """A screenshot prepared for :func:`similarity`.
 
-    Each page's dominant colour is its background; pixels further than
-    FOREGROUND_TOLERANCE from it are foreground. The score is the minimum of:
-
-    - the IoU of the two foreground masks (128 px wide) — where things are;
-    - 1 - mean absolute grey difference over the union of foreground pixels
-      (256 px wide) — what they look like;
-    - 1 - mean absolute grey difference over the whole page — catches a
-      different background with matching content.
-
-    A plain whole-page difference lets a mostly-white background dominate
-    (a moved, resized card scored ~0.90); the foreground terms don't. The
-    shorter page is padded with its own background. Two blank pages with
-    the same background score 1.
+    ``grey`` (box-blurred) and ``mask`` are SIMILARITY_THUMBNAIL_WIDTH wide,
+    ``coarse_mask`` (and its dilation) half that and ``search`` a quarter; the
+    thumbnail height is padded (with the page background) to a multiple of
+    SIMILARITY_SCALE_STEP so a row in one scale maps exactly onto the others.
     """
-    _, _, first_mask, second_mask = _prepared(a, b, SIMILARITY_MASK_WIDTH)
-    union_count = _mask_count(ImageChops.lighter(first_mask, second_mask))
-    iou = (
-        1.0
-        if union_count == 0
-        else _mask_count(ImageChops.darker(first_mask, second_mask)) / union_count
+
+    grey: Image.Image
+    mask: Image.Image
+    coarse_mask: Image.Image
+    dilated_mask: Image.Image
+    search: Image.Image
+    background: int
+    height: int
+    content_height: int
+
+
+def _page(png: bytes) -> _Page:
+    image = _open(png).convert("RGB")
+    width = SIMILARITY_THUMBNAIL_WIDTH
+    content_height = max(1, round(image.height * width / max(1, image.width)))
+    thumbnail = image.resize((width, content_height), Image.Resampling.BILINEAR)
+    background = _background(thumbnail)
+    step = SIMILARITY_SCALE_STEP
+    height = -(-content_height // step) * step
+    if height != content_height:
+        # Pad with the page's own background (not counted as content).
+        canvas = Image.new("RGB", (width, height), background)
+        canvas.paste(thumbnail, (0, 0))
+        thumbnail = canvas
+    coarse = thumbnail.resize((width // 2, height // 2), Image.Resampling.BILINEAR)
+    coarse_mask = _foreground_mask(coarse, background)
+    grey = thumbnail.convert("L")
+    return _Page(
+        grey=grey.filter(ImageFilter.BoxBlur(SIMILARITY_BLUR_RADIUS)),
+        mask=_foreground_mask(thumbnail, background),
+        coarse_mask=coarse_mask,
+        dilated_mask=coarse_mask.filter(
+            ImageFilter.MaxFilter(2 * SIMILARITY_MASK_TOLERANCE + 1)
+        ),
+        search=grey.resize((width // step, height // step), Image.Resampling.BILINEAR),
+        background=_grey_of(background),
+        height=height,
+        content_height=content_height,
     )
 
-    first, second, first_mask, second_mask = _prepared(a, b, SIMILARITY_THUMBNAIL_WIDTH)
-    difference = ImageChops.difference(first.convert("L"), second.convert("L"))
-    page_score = 1.0 - ImageStat.Stat(difference).mean[0] / 255.0
-    union = ImageChops.lighter(first_mask, second_mask)
+
+def _window(image: Image.Image, top: int, height: int, fill: int) -> Image.Image:
+    """Rows ``[top, top + height)`` of ``image``; rows outside it are ``fill``."""
+    if top >= 0 and top + height <= image.height:
+        return image.crop((0, top, image.width, top + height))
+    window = Image.new("L", (image.width, height), fill)
+    start, end = max(0, top), min(image.height, top + height)
+    if end > start:
+        window.paste(image.crop((0, start, image.width, end)), (0, start - top))
+    return window
+
+
+def _mean_difference(first: Image.Image, second: Image.Image) -> float:
+    return float(ImageStat.Stat(ImageChops.difference(first, second)).mean[0])
+
+
+def _best_offset(first: _Page, second: _Page, top: int, height: int, reach: int) -> int:
+    """Vertical offset (thumbnail px) at which ``second`` best matches a band of ``first``.
+
+    Coarse search at a quarter of the thumbnail width over +-``reach``
+    (smallest shift wins ties), then refined by +-half a coarse step.
+    """
+    step = SIMILARITY_SCALE_STEP
+    band = first.search.crop(
+        (0, top // step, first.search.width, (top + height) // step)
+    )
+    coarse_reach = reach // step
+    shifts = sorted(range(-coarse_reach, coarse_reach + 1), key=abs)
+    best = min(
+        shifts,
+        key=lambda shift: _mean_difference(
+            band,
+            _window(second.search, top // step + shift, band.height, second.background),
+        ),
+    )
+    grey_band = first.grey.crop((0, top, first.grey.width, top + height))
+    half = step // 2
+    return min(
+        (best * step, best * step - half, best * step + half),
+        key=lambda offset: _mean_difference(
+            grey_band, _window(second.grey, top + offset, height, second.background)
+        ),
+    )
+
+
+def _band_score(
+    first: _Page, second: _Page, top: int, height: int, offset: int
+) -> tuple[float, float]:
+    """(foreground-aware score, weight) of a band of ``first`` vs ``second`` shifted.
+
+    The overlap term is a tolerant IoU: the share of both pages' foreground
+    pixels that have foreground of the other page within
+    SIMILARITY_MASK_TOLERANCE pixels.
+    """
+    box = (0, top // 2, first.coarse_mask.width, (top + height) // 2)
+    first_mask, first_dilated = first.coarse_mask.crop(box), first.dilated_mask.crop(box)
+    second_top = (top + offset) // 2
+    second_mask = _window(second.coarse_mask, second_top, height // 2, 0)
+    second_dilated = _window(second.dilated_mask, second_top, height // 2, 0)
+    mask_total = _mask_count(first_mask) + _mask_count(second_mask)
+    overlap = (
+        1.0
+        if mask_total == 0
+        else (
+            _mask_count(ImageChops.darker(first_mask, second_dilated))
+            + _mask_count(ImageChops.darker(second_mask, first_dilated))
+        )
+        / mask_total
+    )
+
+    first_grey = first.grey.crop((0, top, first.grey.width, top + height))
+    second_grey = _window(second.grey, top + offset, height, second.background)
+    difference = ImageChops.difference(first_grey, second_grey)
+    page_score = 1.0 - float(ImageStat.Stat(difference).mean[0]) / 255.0
+    union = ImageChops.lighter(
+        first.mask.crop((0, top, first.mask.width, top + height)),
+        _window(second.mask, top + offset, height, 0),
+    )
     union_count = _mask_count(union)
     foreground_score = (
         1.0
@@ -290,7 +373,70 @@ def similarity(a: bytes, b: bytes) -> float:
         else 1.0
         - float(ImageStat.Stat(difference, union).sum[0]) / union_count / 255.0
     )
-    return max(0.0, min(1.0, iou, foreground_score, page_score))
+    content = union_count / float(first.grey.width * height)
+    weight = max(content, SIMILARITY_MIN_BAND_WEIGHT) * height
+    return min(overlap, foreground_score, page_score), weight
+
+
+def _directional_similarity(first: _Page, second: _Page) -> float:
+    """Content-weighted mean band score of ``first``'s bands found in ``second``."""
+    step = SIMILARITY_SCALE_STEP
+    band = max(step, round(first.grey.width * QA_HEIGHT / THUMBNAIL_WIDTH / step) * step)
+    reach = round(SIMILARITY_MAX_DRIFT * max(first.height, second.height) / step) * step
+    total = 0.0
+    total_weight = 0.0
+    for top in range(0, first.height, band):
+        height = min(band, first.height - top)
+        offset = _best_offset(first, second, top, height, reach)
+        score, weight = _band_score(first, second, top, height, offset)
+        total += score * weight
+        total_weight += weight
+    return total / total_weight if total_weight else 1.0
+
+
+def similarity(a: bytes, b: bytes) -> float:
+    """Foreground-aware, drift-tolerant similarity of two screenshots in [0, 1].
+
+    Each page's dominant colour is its background; pixels further than
+    FOREGROUND_TOLERANCE from it are foreground. A plain whole-page
+    difference lets a mostly-white background dominate (a moved, resized
+    card scored ~0.90), so every comparison is the minimum of:
+
+    - a tolerant IoU of the two foreground masks (128 px wide; foreground
+      within SIMILARITY_MASK_TOLERANCE px of the other's counts) — where
+      things are;
+    - 1 - mean absolute (box-blurred) grey difference over the union of
+      foreground pixels (256 px wide) — what they look like;
+    - 1 - mean absolute (box-blurred) grey difference over everything —
+      catches a different background with matching content.
+
+    Real pages drift: one heading wrapping differently shifts everything
+    below it, and a position-by-position comparison of a long page then
+    collapses (a near-identical built app scored 0.41 against its mock). So
+    the first page is cut into viewport-tall bands (1280x900 scaled); each
+    band is compared with the best-matching window of the other page within
+    +-SIMILARITY_MAX_DRIFT of the taller page's height (coarse search on a
+    64 px wide greyscale, refined at 256 px), and band scores are averaged
+    weighted by their foreground content (blank bands count a little). This
+    is done in both directions and the lower score kept, so extra content on
+    either side counts. A layout change larger than the drift allowance — a
+    missing section, a card moved or resized — still scores low. Finally,
+    pages whose heights differ by more than 1 - SIMILARITY_HEIGHT_RATIO are
+    scaled down by (height ratio / SIMILARITY_HEIGHT_RATIO).
+
+    Two blank pages with the same background score 1.
+    """
+    first, second = _page(a), _page(b)
+    score = min(
+        _directional_similarity(first, second),
+        _directional_similarity(second, first),
+    )
+    ratio = min(first.content_height, second.content_height) / max(
+        first.content_height, second.content_height
+    )
+    if ratio < SIMILARITY_HEIGHT_RATIO:
+        score *= ratio / SIMILARITY_HEIGHT_RATIO
+    return max(0.0, min(1.0, score))
 
 
 def is_blank(png: bytes) -> bool:
