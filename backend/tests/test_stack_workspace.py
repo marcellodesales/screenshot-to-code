@@ -81,8 +81,12 @@ def test_commit_version_writes_mocks_and_message(tmp_path: Path) -> None:
         "versions"
     ]
     assert versions == [
-        {"n": 1, "ui_commit_hash": "h1", "parent": None, "sha": sha, "message": message}
+        {"n": 1, "ui_commit_hash": "h1", "parent": None, "message": message}
     ]
+    # The committed stack.yaml is the working copy: no SHA written back.
+    assert _git(ws, "show", f"{sha}:stack.yaml") == (
+        (ws.path / "stack.yaml").read_text(encoding="utf-8").strip()
+    )
 
 
 def test_commit_version_drops_extra_options(tmp_path: Path) -> None:
@@ -147,12 +151,14 @@ def test_uploads_not_tracked(tmp_path: Path) -> None:
     ws.commit_version(
         ui_commit_hash="h1", parent_ui_commit_hash=None, option_codes=["1"], message="v1"
     )
+    ws.update_version("h1", 0, "edited", "v1 manual edit")
 
     path = ws.save_upload("video", "data:video/mp4;base64,AAAA")
 
     assert path.parent == ws.path / "uploads" / "video"
     assert path.read_bytes() == b"\x00\x00\x00"
-    assert _git(ws, "status", "--porcelain", "--", "uploads") == ""
+    # Nothing drifts from the committed tree: not uploads, not stack.yaml.
+    assert _git(ws, "status", "--porcelain") == ""
     assert _git(ws, "check-ignore", str(path.relative_to(ws.path)))
 
 

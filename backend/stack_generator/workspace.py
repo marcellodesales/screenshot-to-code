@@ -10,7 +10,8 @@ Layout (spec §2, §2.1):
 Every UI version is a commit written with ``git commit-tree`` whose parent is
 the commit of its UI parent version, so forks in the UI history are forks in
 git. Each version is pinned by ``refs/s2c/versions/<ui-commit-hash>``; ``main``
-points at the most recent version or build. Trees are built in a throwaway
+points at the most recent version or build. SHAs live only in those refs, never
+in ``stack.yaml``, so the committed ``stack.yaml`` matches the working copy. Trees are built in a throwaway
 index from the base commit, so the working tree never leaks into a commit.
 """
 
@@ -211,7 +212,6 @@ class RunWorkspace:
                 "n": len(versions) + 1,
                 "ui_commit_hash": ui_commit_hash,
                 "parent": parent_ui_commit_hash,
-                "sha": None,
                 "message": message,
             }
             metadata["versions"] = [*versions, entry]
@@ -234,9 +234,6 @@ class RunWorkspace:
             self._git("update-ref", _VERSION_REF_PREFIX + ui_commit_hash, sha)
             self._git("update-ref", "refs/heads/main", sha)
             self._sync_index()
-
-            entry["sha"] = sha
-            self._write_metadata(metadata)
             return sha
 
     def update_version(
@@ -253,12 +250,6 @@ class RunWorkspace:
             self._git("update-ref", _VERSION_REF_PREFIX + ui_commit_hash, sha)
             self._git("update-ref", "refs/heads/main", sha)
             self._sync_index()
-
-            metadata = self.metadata
-            for version in self._versions_of(metadata):
-                if version.get("ui_commit_hash") == ui_commit_hash:
-                    version["sha"] = sha
-            self._write_metadata(metadata)
             return sha
 
     def checkout_version(self, ui_commit_hash: str, dest: Path) -> None:
@@ -330,10 +321,6 @@ class RunWorkspace:
         if sha is None:
             raise KeyError(ui_commit_hash)
         return sha
-
-    def _versions_of(self, metadata: dict[str, Any]) -> list[dict[str, Any]]:
-        versions: Any = metadata.get("versions") or []
-        return cast(list[dict[str, Any]], versions)
 
     def _stale_design_dirs(self, base_sha: str | None, option_count: int) -> list[str]:
         """``op<M>/design`` dirs (in the base commit or on disk) with M > count."""
