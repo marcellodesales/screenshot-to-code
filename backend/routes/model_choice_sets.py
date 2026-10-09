@@ -1,10 +1,33 @@
 from llm import Llm
 
-# Video variants always use Gemini.
+# Video variants without frames (or with only a Gemini key) use Gemini.
 VIDEO_VARIANT_MODELS = (
     Llm.GEMINI_3_FLASH_PREVIEW_MINIMAL,
     Llm.GEMINI_3_1_PRO_PREVIEW_HIGH,
 )
+
+
+
+def video_frames_variant_models(
+    *, openai: bool, anthropic: bool, gemini: bool
+) -> tuple[Llm, Llm] | None:
+    """Two video variants when the browser sent sampled frames.
+
+    Frame models (Claude/GPT) see the frames as images; Gemini keeps the
+    video. Gemini-only keys keep VIDEO_VARIANT_MODELS (returns None).
+    """
+    if anthropic and gemini:
+        return (Llm.CLAUDE_FABLE_5_1_HIGH, Llm.GEMINI_3_1_PRO_PREVIEW_HIGH)
+    if openai and gemini:
+        return (Llm.GPT_5_6_SOL_HIGH, Llm.GEMINI_3_1_PRO_PREVIEW_HIGH)
+    if anthropic and openai:
+        return (Llm.CLAUDE_FABLE_5_1_HIGH, Llm.GPT_5_6_SOL_HIGH)
+    if anthropic:
+        return (Llm.CLAUDE_FABLE_5_1_HIGH, Llm.CLAUDE_OPUS_5_5_MEDIUM)
+    if openai:
+        return (Llm.GPT_5_6_SOL_HIGH, Llm.GPT_5_6_SOL_MEDIUM)
+    return None
+
 
 # All API keys available.
 

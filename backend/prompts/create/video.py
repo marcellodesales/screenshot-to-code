@@ -56,3 +56,52 @@ def build_video_prompt_messages(
             "content": user_content,
         },
     ]
+
+
+def build_video_frames_prompt_messages(
+    frame_data_urls: list[str],
+    stack: Stack,
+    text_prompt: str,
+    image_generation_enabled: bool,
+    design_system: str | None = None,
+) -> list[ChatCompletionMessageParam]:
+    """Video prompt for models without video input: the sampled frames as images."""
+    image_policy = build_user_image_policy(image_generation_enabled)
+    selected_stack = build_selected_stack_policy(stack)
+    design_system_block = build_design_system_prompt_block(design_system)
+    user_text = f"""
+These are {len(frame_data_urls)} frames sampled at 1 fps from a screen recording of an app, in order. Reconstruct the app, including the states and interactions the frames show.
+
+- Compare consecutive frames to work out every user interaction and the UI state change it causes.
+- Make sure the app looks exactly like what you see in the frames.
+- Pay close attention to background color, text color, font size, font family,
+padding, margin, border, etc. Match the colors and sizes exactly.
+- {image_policy}
+- If some functionality requires a backend call, just mock the data instead.
+- MAKE THE APP FUNCTIONAL using JavaScript, so the same interactions produce the same states shown in the frames.
+
+{selected_stack}
+{design_system_block}
+"""
+    if text_prompt.strip():
+        user_text = f"{user_text}\n\nAdditional instructions: {text_prompt}"
+
+    user_content: list[ChatCompletionContentPartParam] = [
+        {
+            "type": "image_url",
+            "image_url": {"url": frame_data_url, "detail": "high"},
+        }
+        for frame_data_url in frame_data_urls
+    ]
+    user_content.append({"type": "text", "text": user_text})
+
+    return [
+        {
+            "role": "system",
+            "content": system_prompt.SYSTEM_PROMPT,
+        },
+        {
+            "role": "user",
+            "content": user_content,
+        },
+    ]

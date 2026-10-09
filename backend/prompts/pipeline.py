@@ -18,6 +18,7 @@ async def build_prompt_messages(
     file_state: dict[str, str] | None = None,
     image_generation_enabled: bool = True,
     design_system: str | None = None,
+    use_video_frames: bool = False,
 ) -> Prompt:
     plan = derive_prompt_construction_plan(
         stack=stack,
@@ -50,4 +51,5 @@ async def build_prompt_messages(
         prompt,
         image_generation_enabled,
         design_system,
+        use_video_frames,
     )

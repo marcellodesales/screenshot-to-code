@@ -37,6 +37,7 @@ RUN_ID_PATTERN = re.compile(r"^run_\d{8}_\d{6}_[0-9a-f]{8}$")
 # UI commit hashes are nanoids; anything else must never reach a ref name.
 _UI_COMMIT_HASH_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _MOCK_PATH_PATTERN = re.compile(r"^op(\d+)/design/mock\.html$")
+_UPLOAD_STEM_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _DATA_URL_PATTERN = re.compile(r"^data:([\w.+-]+/[\w.+-]+)?(?:;[^,]*)?;base64,(.*)$", re.S)
 
 _GIT_IDENTITY = {
@@ -152,8 +153,14 @@ class RunWorkspace:
     # -- uploads -----------------------------------------------------------
 
     def save_upload(
-        self, kind: Literal["video", "screenshots"], data_url: str
+        self,
+        kind: Literal["video", "screenshots"],
+        data_url: str,
+        stem: str | None = None,
     ) -> Path:
+        """Store a data-URL upload; ``stem`` names the file (else random)."""
+        if stem is not None and not _UPLOAD_STEM_PATTERN.match(stem):
+            raise ValueError(f"Invalid upload name: {stem!r}")
         match = _DATA_URL_PATTERN.match(data_url)
         if match is None:
             raise ValueError("Upload is not a base64 data URL")
@@ -164,7 +171,8 @@ class RunWorkspace:
         extension = mimetypes.guess_extension(match.group(1) or "") or ".bin"
         directory = self.path / "uploads" / kind
         directory.mkdir(parents=True, exist_ok=True)
-        target = directory / f"{uuid.uuid4().hex[:12]}{extension}"
+        name = stem if stem is not None else uuid.uuid4().hex[:12]
+        target = directory / f"{name}{extension}"
         target.write_bytes(data)
         return target
 
