@@ -3,6 +3,7 @@ import { BuildSystem } from "../types";
 import {
   formatPercent,
   normalizeResponsive,
+  normalizeVisualQa,
   ResponsiveResult,
   VisualQaData,
 } from "./visualQa";
@@ -75,17 +76,26 @@ function jsonInit(method: "PUT" | "POST", body: unknown): RequestInit {
   };
 }
 
-export function saveVersion(
+export interface SaveVersionResult {
+  gitSha: string;
+  // Visual QA of the saved version (same shape as the websocket `visualQa`
+  // data); absent when the backend's QA failed or timed out.
+  visualQa?: VisualQaData;
+}
+
+export async function saveVersion(
   runId: string,
   commitHash: string,
   body: SaveVersionBody,
   fetcher: typeof fetch = fetch
-): Promise<{ gitSha: string }> {
-  return requestJson<{ gitSha: string }>(
+): Promise<SaveVersionResult> {
+  const raw = await requestJson<{ gitSha: string; visualQa?: unknown }>(
     fetcher,
     runUrl(runId, `/versions/${encodeURIComponent(commitHash)}`),
     jsonInit("PUT", body)
   );
+  const visualQa = normalizeVisualQa(raw.visualQa);
+  return visualQa ? { gitSha: raw.gitSha, visualQa } : { gitSha: raw.gitSha };
 }
 
 // ---- Build app (spec §7) ----

@@ -1,10 +1,13 @@
+import asyncio
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 
+from routes import runs
 from routes.runs import SaveVersionRequest, get_qa_file, list_stacks, save_version
 from stack_generator.workspace import RunWorkspace, new_run_id
 
@@ -36,6 +39,36 @@ def _git(ws: RunWorkspace, *args: str) -> str:
 def runs_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("RUNS_DIR", str(tmp_path))
     return tmp_path
+
+
+class FakeQa:
+    """Stands in for run_version_qa (no Chromium in route tests)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, list[str]]] = []
+        self.delay = 0.0
+        self.error: Exception | None = None
+
+    async def __call__(self, workspace: RunWorkspace, ui_commit_hash: str) -> dict[str, Any]:
+        # Record the codes QA sees: it must run on the saved version.
+        self.calls.append(
+            (workspace.run_id, ui_commit_hash, workspace.option_codes(ui_commit_hash))
+        )
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if self.error is not None:
+            raise self.error
+        return {
+            "commitHash": ui_commit_hash,
+            "options": [{"index": 0, "renderOk": True, "duplicateOf": None}],
+        }
+
+
+@pytest.fixture(autouse=True)
+def fake_qa(monkeypatch: pytest.MonkeyPatch) -> FakeQa:
+    fake = FakeQa()
+    monkeypatch.setattr(runs, "run_version_qa", fake)
+    return fake
 
 
 @pytest.mark.asyncio
@@ -96,6 +129,69 @@ async def test_put_version_updates_existing(runs_dir: Path) -> None:
     )
     assert ws.option_codes("e1") == ["<two/>", "<b/>"]
     assert ws.version_number("e1") == 2
+
+
+@pytest.mark.asyncio
+async def test_put_version_returns_visual_qa(runs_dir: Path, fake_qa: FakeQa) -> None:
+    ws = _workspace(runs_dir)
+
+    response = await save_version(
+        ws.run_id,
+        "e1",
+        SaveVersionRequest(parentCommitHash="h1", optionIndex=1, code="<edited/>"),
+    )
+
+    assert fake_qa.calls == [(ws.run_id, "e1", ["<a/>", "<edited/>"])]
+    assert response.visualQa == {
+        "commitHash": "e1",
+        "options": [{"index": 0, "renderOk": True, "duplicateOf": None}],
+    }
+    assert response.gitSha == _git(ws, "rev-parse", "refs/s2c/versions/e1")
+
+
+@pytest.mark.asyncio
+async def test_put_version_omits_visual_qa_when_qa_fails(
+    runs_dir: Path, fake_qa: FakeQa
+) -> None:
+    ws = _workspace(runs_dir)
+    fake_qa.error = RuntimeError("no renderer")
+
+    response = await save_version(
+        ws.run_id,
+        "e1",
+        SaveVersionRequest(parentCommitHash="h1", optionIndex=0, code="<x/>"),
+    )
+
+    assert response.visualQa is None
+    assert ws.has_version("e1")
+    assert "visualQa" not in response.model_dump(exclude_none=True)
+
+
+@pytest.mark.asyncio
+async def test_put_version_omits_visual_qa_on_timeout(
+    runs_dir: Path, fake_qa: FakeQa, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = _workspace(runs_dir)
+    monkeypatch.setattr(runs, "VISUAL_QA_TIMEOUT_SECONDS", 0.05)
+    fake_qa.delay = 1.0
+
+    response = await save_version(
+        ws.run_id,
+        "e1",
+        SaveVersionRequest(parentCommitHash="h1", optionIndex=0, code="<x/>"),
+    )
+
+    assert response.visualQa is None
+    assert response.gitSha
+
+
+def test_put_version_route_drops_null_visual_qa() -> None:
+    route = next(
+        r
+        for r in runs.router.routes
+        if getattr(r, "path", "") == "/api/runs/{run_id}/versions/{commit_hash}"
+    )
+    assert getattr(route, "response_model_exclude_none", False) is True
 
 
 @pytest.mark.asyncio

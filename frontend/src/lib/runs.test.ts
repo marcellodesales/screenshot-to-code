@@ -53,6 +53,70 @@ describe("saveVersion", () => {
     });
   });
 
+  it("parses the version's visual QA when the backend ran it", async () => {
+    const sha = "e".repeat(40);
+    const result = await saveVersion(
+      "run_20261008_101500_ab12cd34",
+      "commitHash1",
+      { parentCommitHash: "parent1", optionIndex: 0, code: "<html/>" },
+      fakeFetcher(
+        200,
+        {
+          gitSha: sha,
+          visualQa: {
+            commitHash: "commitHash1",
+            options: [
+              {
+                index: 0,
+                screenshot: "/api/runs/r/qa/commitHash1/op1-1280.png",
+                render_ok: false,
+                error: "Blank render",
+                duplicate_of: null,
+                responsive: { pass: true, widths: [] },
+              },
+            ],
+          },
+        },
+        []
+      )
+    );
+
+    expect(result.gitSha).toBe(sha);
+    expect(result.visualQa).toEqual({
+      commitHash: "commitHash1",
+      options: [
+        {
+          index: 0,
+          screenshot: "/api/runs/r/qa/commitHash1/op1-1280.png",
+          renderOk: false,
+          error: "Blank render",
+          duplicateOf: null,
+          similarity: null,
+          responsive: { pass: true, widths: [] },
+        },
+      ],
+    });
+  });
+
+  it("leaves visualQa undefined when the backend omitted it", async () => {
+    const result = await saveVersion(
+      "run_20261008_101500_ab12cd34",
+      "commitHash1",
+      { parentCommitHash: null, optionIndex: 0, code: "" },
+      fakeFetcher(200, { gitSha: "f".repeat(40) }, [])
+    );
+    expect(result).toEqual({ gitSha: "f".repeat(40) });
+    expect(result.visualQa).toBeUndefined();
+
+    const malformed = await saveVersion(
+      "run_20261008_101500_ab12cd34",
+      "commitHash1",
+      { parentCommitHash: null, optionIndex: 0, code: "" },
+      fakeFetcher(200, { gitSha: "f".repeat(40), visualQa: { options: [] } }, [])
+    );
+    expect(malformed).toEqual({ gitSha: "f".repeat(40) });
+  });
+
   it("URL-encodes path segments", async () => {
     const calls: FetchCall[] = [];
     await saveVersion(
