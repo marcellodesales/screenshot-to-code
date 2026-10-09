@@ -55,7 +55,9 @@ Stack choice lives in `stack.yaml`, never in directory names.
   which forks its history. The git parent of a version commit is the git
   commit of its UI parent version (written with `git commit-tree`), every
   version is pinned by `refs/s2c/versions/<ui-commit-hash>`, and `main` points
-  at the most recent version.
+  at the most recent version. SHAs live only in those refs: `stack.yaml`'s
+  versions index records `n`, `ui_commit_hash`, `parent` and `message`,
+  never a SHA, so the committed `stack.yaml` always matches the working copy.
 - **Commit 2+ — the app.** "🚀 Build app" commits `op<N>/app/**` on top of
   the version it was built from: `:tada: First version` for the first build,
   `:rocket: Build app from version <n>` afterwards.
@@ -157,9 +159,17 @@ lockfile; they are separate catalog entries so each is tested on its own.
 ### Trust boundary
 
 To build and start generated apps the backend needs the Docker CLI and the
-host Docker socket. That is root-equivalent on the host. Acceptable for local
-use; must be called out in the README and gated behind an env flag
-(`STACK_GENERATOR_ENABLED`) so the default install does not mount the socket.
+host Docker socket. **That socket is root-equivalent on the host**: acceptable
+for local use only, and called out in the README and in `docker-compose.yml`.
+
+What is implemented: the socket is mounted in every install — Traefik needs it
+(read-only) for its Docker provider anyway, and the backend mounts it so
+"Build app" can run `docker`/`docker compose` on the host daemon. The
+protection is the env flag `STACK_GENERATOR_ENABLED` (default `false`): unless
+it is `true`, the build endpoints (`POST`/`GET /api/runs/{runId}/build`)
+answer **403** and the backend never invokes Docker. Users who do not want the
+backend to hold the socket at all can drop that volume from their compose
+file; the rest of the app works without it.
 
 ## 7. "🚀 Build app" pipeline (phase 2+ backend work)
 
