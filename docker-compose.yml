@@ -1,6 +1,30 @@
-version: '3.9'
-
 services:
+  # System gateway. Every generated app (internal/stack/*) and the UI itself are
+  # reached through this single entrypoint, mirroring a Kubernetes Ingress:
+  #   http://localhost:3311/              -> frontend (the UI)
+  #   http://<APP_ID>.localhost:3311/     -> generated app <APP_ID>
+  # Static config: internal/traefik/traefik.yml. Routes come from container labels.
+  # NOTE: mounting the Docker socket (read-only) still lets Traefik read all
+  # container metadata; it is meant for local use only.
+  traefik:
+    image: traefik:v3.7.14
+    command: --configFile=/etc/traefik/traefik.yml
+    ports:
+      - "${TRAEFIK_HTTP_PORT:-3311}:80"
+      # Dashboard/API: loopback only -> http://127.0.0.1:3312/dashboard/
+      - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT:-3312}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./internal/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+    networks:
+      - traefik_webgateway
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
   backend:
     image: ohanalabs-ai/screenshot-to-code-backend
     build: 
@@ -30,8 +54,11 @@ services:
     volumes:
       - ./data:/data
 
+    # BACKEND_PORT is the port uvicorn listens on inside the container (and the
+    # default host port). BACKEND_HOST_PORT only changes the published host port,
+    # e.g. to run a second copy next to one already bound to 7001.
     ports:
-      - "${BACKEND_PORT:-7001}:${BACKEND_PORT:-7001}"
+      - "${BACKEND_HOST_PORT:-${BACKEND_PORT:-7001}}:${BACKEND_PORT:-7001}"
 
     command: poetry run uvicorn main:app --host 0.0.0.0 --port ${BACKEND_PORT:-7001}
   
@@ -47,5 +74,28 @@ services:
       - PROXY_CODEGEN_BACKEND=http://backend:${BACKEND_PORT:-7001}
     depends_on:
       - backend
+    # Direct access (backward compatible). FRONTEND_PORT only changes the host
+    # port; the Vite dev server always listens on 5173 inside the container.
     ports:
-      - "5173:5173"
+      - "${FRONTEND_PORT:-5173}:5173"
+    # `default` reaches the backend; `traefik_webgateway` lets the gateway reach
+    # the UI. The backend stays off the gateway network: it has no route, and
+    # keeping it off avoids leaking its `backend` DNS alias to generated apps.
+    networks:
+      - default
+      - traefik_webgateway
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik_webgateway
+      # http://localhost:3311/ -> UI (Vite HMR and the proxied /generate-code
+      # websocket are plain HTTP upgrades; Traefik forwards them as-is).
+      - traefik.http.routers.s2c-frontend.rule=Host(`localhost`)
+      - traefik.http.routers.s2c-frontend.entrypoints=web
+      - traefik.http.routers.s2c-frontend.service=s2c-frontend
+      - traefik.http.services.s2c-frontend.loadbalancer.server.port=5173
+
+networks:
+  # Shared gateway network with a fixed name (no project prefix) so generated
+  # apps can join it with `external: true` (contract: internal/stack/*/docker-compose.yaml).
+  traefik_webgateway:
+    name: traefik_webgateway

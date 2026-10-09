@@ -1,0 +1,24 @@
+# Template metadata. Mirrors this template's entry in ../catalog.yaml.
+id: static-html-pnpm
+name: Static HTML (pnpm)
+description: >-
+  Serves the generated single-file HTML mock as-is (public/index.html) with a
+  pinned Node static server (`serve`) installed via pnpm. Works for every
+  source stack because each mock is a self-contained index.html.
+runtime: static
+build_system: pnpm
+source_stacks:
+  - html_css
+  - html_tailwind
+  - react_tailwind
+  - bootstrap
+  - vue_tailwind
+  - ionic_tailwind
+port: 3000
+healthcheck:
+  path: /
+# Where the generator (and ../test-template.sh) writes the selected mock,
+# relative to the template root.
+mock_path: public/index.html
+phase: 1
+status: available

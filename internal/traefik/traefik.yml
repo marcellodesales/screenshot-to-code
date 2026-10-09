@@ -1,0 +1,42 @@
+# Traefik v3 static configuration for the system gateway (root docker-compose.yml).
+#
+# Kept in a file rather than `command:` flags so the gateway contract
+# (entrypoints, provider, dashboard) is readable and diffable in one place;
+# routes themselves are dynamic and come from container labels.
+#
+# Routing contract (see docs/superpowers/specs/2026-10-08-stack-generator-design.md §5/§6):
+#   - Only containers labelled `traefik.enable=true` are exposed.
+#   - Backends are reached over the shared `traefik_webgateway` network.
+#   - Everything enters through the `web` entrypoint (host port 3311).
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+entryPoints:
+  web:
+    address: ":80"
+  # Dashboard/API listener. Published on 127.0.0.1 only (see docker-compose.yml).
+  traefik:
+    address: ":8080"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: traefik_webgateway
+    watch: true
+
+api:
+  dashboard: true
+  # Serves the dashboard/API on the `traefik` entrypoint without a router.
+  # Safe only because that port is bound to the host loopback interface.
+  insecure: true
+
+ping:
+  entryPoint: traefik
+
+log:
+  level: INFO
+
+accessLog: {}

@@ -1,0 +1,35 @@
+# Generated-service contract (docs/superpowers/specs/2026-10-08-stack-generator-design.md §5).
+# Requires the system gateway from the root docker-compose.yml (Traefik + the
+# `traefik_webgateway` network). Reach the app at http://${APP_HOST}:3311/.
+name: ${APP_ID:?APP_ID must be set in .env}
+
+services:
+  app:
+    # No `image:` on purpose: compose names it `${APP_ID}-app`, so
+    # `docker compose down --rmi local` removes it with the app.
+    build:
+      context: .
+    restart: unless-stopped
+    # No host ports: Traefik is the only way in.
+    expose:
+      - "3000"
+    networks:
+      - traefik_webgateway
+    # Traefik's Docker provider skips unhealthy containers.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik_webgateway
+      - traefik.http.routers.${APP_ID}.rule=Host(`${APP_HOST:-${APP_ID}.localhost}`)
+      - traefik.http.routers.${APP_ID}.entrypoints=web
+      - traefik.http.routers.${APP_ID}.service=${APP_ID}
+      - traefik.http.services.${APP_ID}.loadbalancer.server.port=3000
+
+networks:
+  traefik_webgateway:
+    external: true

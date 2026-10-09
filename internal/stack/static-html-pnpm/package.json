@@ -1,0 +1,17 @@
+{
+  "name": "static-html-pnpm-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Serves a single self-contained HTML mock (public/index.html) on port 3000.",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "serve public --listen tcp://0.0.0.0:3000 --no-clipboard"
+  },
+  "dependencies": {
+    "serve": "14.2.6"
+  }
+}
