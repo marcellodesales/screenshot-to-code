@@ -3,10 +3,12 @@ jest.mock("../config", () => ({ HTTP_BACKEND_URL: "http://backend.test" }));
 import {
   BuildJob,
   buildStartBody,
+  distinctOptionIndices,
   enabledBuildSystems,
   getBuild,
   isBuildFinished,
   listStacks,
+  parityLabel,
   RunsApiError,
   saveVersion,
   startBuild,
@@ -133,6 +135,10 @@ describe("startBuild", () => {
       stepMessage: "Running",
       url: "http://run-20261008-101500-ab12cd34-op1.localhost:3311/",
       error: null,
+      screenshot: null,
+      parity: null,
+      responsive: null,
+      renderOk: null,
     });
     expect(job.options[1].error).toBe("boom");
   });
@@ -189,6 +195,69 @@ describe("getBuild", () => {
       stepMessage: "Queued",
       url: null,
       error: null,
+      screenshot: null,
+      parity: null,
+      responsive: null,
+      renderOk: null,
+    });
+  });
+
+  it("parses the app screenshot, parity, responsive and render_ok fields", async () => {
+    const job = await getBuild(
+      RUN,
+      fakeFetcher(
+        200,
+        {
+          ...backendJob,
+          options: [
+            {
+              index: 0,
+              state: "running",
+              step_message: "Running",
+              url: "http://x/",
+              error: null,
+              screenshot: `/api/runs/${RUN}/qa/h1/app-op0-1280.png`,
+              parity: 0.931,
+              responsive: {
+                pass: false,
+                widths: [
+                  {
+                    width: 1920,
+                    content_width_ratio: 0.4,
+                    horizontal_overflow: false,
+                  },
+                ],
+              },
+              render_ok: true,
+            },
+            {
+              index: 1,
+              state: "running",
+              screenshot: "/x.png",
+              parity: 0.5,
+              responsive: { pass: true, widths: [] },
+              renderOk: false,
+            },
+          ],
+        },
+        []
+      )
+    );
+    expect(job?.options[0]).toMatchObject({
+      screenshot: `/api/runs/${RUN}/qa/h1/app-op0-1280.png`,
+      parity: 0.931,
+      responsive: {
+        pass: false,
+        widths: [
+          { width: 1920, contentWidthRatio: 0.4, horizontalOverflow: false },
+        ],
+      },
+      renderOk: true,
+    });
+    expect(job?.options[1]).toMatchObject({
+      parity: 0.5,
+      responsive: { pass: true, widths: [] },
+      renderOk: false,
     });
   });
 });
@@ -200,6 +269,10 @@ describe("isBuildFinished", () => {
     stepMessage: "",
     url: null,
     error: null,
+    screenshot: null,
+    parity: null,
+    responsive: null,
+    renderOk: null,
   });
   const job = (states: BuildJob["options"][number]["state"][]): BuildJob => ({
     runId: RUN,
@@ -270,5 +343,81 @@ describe("buildStartBody", () => {
         geminiApiKey: null,
       })
     ).toEqual({ commitHash: "h1", buildSystem: "bun", openAiApiKey: "sk-o" });
+  });
+});
+
+describe("buildStartBody options", () => {
+  const settings = {
+    buildSystem: "pnpm" as const,
+    openAiApiKey: null,
+    anthropicApiKey: null,
+    geminiApiKey: null,
+  };
+
+  it("sends the chosen options sorted and de-duplicated", () => {
+    expect(buildStartBody("h1", settings, [2, 0, 2])).toEqual({
+      commitHash: "h1",
+      buildSystem: "pnpm",
+      options: [0, 2],
+    });
+  });
+
+  it("omits options when none are given", () => {
+    expect(buildStartBody("h1", settings)).not.toHaveProperty("options");
+  });
+
+  it("startBuild POSTs the options", async () => {
+    const calls: FetchCall[] = [];
+    await startBuild(
+      RUN,
+      buildStartBody("h1", settings, [1]),
+      fakeFetcher(200, backendJob, calls)
+    );
+    expect(JSON.parse(String(calls[0].init?.body)).options).toEqual([1]);
+  });
+});
+
+describe("distinctOptionIndices", () => {
+  const qaOption = (index: number, duplicateOf: number | null) => ({
+    index,
+    screenshot: null,
+    renderOk: true,
+    error: null,
+    duplicateOf,
+    similarity: duplicateOf === null ? null : 0.99,
+    responsive: null,
+  });
+
+  it("is every option when there is no QA", () => {
+    expect(distinctOptionIndices(3, undefined)).toEqual([0, 1, 2]);
+  });
+
+  it("skips options QA marked as duplicates", () => {
+    expect(
+      distinctOptionIndices(4, {
+        commitHash: "h1",
+        options: [qaOption(0, null), qaOption(1, 0), qaOption(2, null), qaOption(3, 2)],
+      })
+    ).toEqual([0, 2]);
+  });
+
+  it("keeps options QA has no entry for", () => {
+    expect(
+      distinctOptionIndices(3, {
+        commitHash: "h1",
+        options: [qaOption(1, 0)],
+      })
+    ).toEqual([0, 2]);
+  });
+});
+
+describe("parityLabel", () => {
+  it("formats the parity as a percentage", () => {
+    expect(parityLabel(0.931)).toEqual({ text: "matches mock 93%", isLow: false });
+  });
+
+  it("is low below 80%", () => {
+    expect(parityLabel(0.79)).toEqual({ text: "matches mock 79%", isLow: true });
+    expect(parityLabel(0.8).isLow).toBe(false);
   });
 });

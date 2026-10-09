@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { BsExclamationTriangleFill } from "react-icons/bs";
 import { LuExternalLink } from "react-icons/lu";
 import { Settings } from "../../types";
@@ -6,13 +6,18 @@ import { Button } from "../ui/button";
 import {
   BuildJob,
   buildStartBody,
+  distinctOptionIndices,
   getBuild,
   isBuildFinished,
   OptionState,
   OptionStatus,
+  parityLabel,
   RunsApiError,
   startBuild,
 } from "../../lib/runs";
+import { qaAssetUrl, qaForOption } from "../../lib/visualQa";
+import { useProjectStore } from "../../store/project-store";
+import { buildOptionsFor } from "./buildOptions";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -74,8 +79,75 @@ function OptionRow({ option }: { option: OptionStatus }) {
           {option.error}
         </p>
       )}
+      <OptionQa option={option} />
     </li>
   );
+}
+
+// App screenshot + parity / responsive / render checks of a running option.
+function OptionQa({ option }: { option: OptionStatus }) {
+  const screenshotUrl = qaAssetUrl(option.screenshot);
+  const parity = option.parity !== null ? parityLabel(option.parity) : null;
+  const hasChecks =
+    screenshotUrl !== null ||
+    parity !== null ||
+    option.responsive !== null ||
+    option.renderOk === false;
+  if (!hasChecks) return null;
+
+  return (
+    <div className="mt-2 flex items-start gap-2" data-testid="build-option-qa">
+      {screenshotUrl && (
+        <a
+          href={screenshotUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Open the app screenshot full size"
+          className="block w-24 shrink-0 overflow-hidden rounded border border-gray-200 hover:border-violet-400 dark:border-zinc-700 dark:hover:border-violet-500"
+        >
+          <img
+            src={screenshotUrl}
+            alt={`Option ${option.index + 1} app screenshot`}
+            className="h-14 w-full object-cover object-top"
+            loading="lazy"
+          />
+        </a>
+      )}
+      <div className="flex flex-wrap gap-1">
+        {parity && (
+          <span
+            className={`rounded px-1.5 py-0.5 text-[10px] font-medium leading-none ${
+              parity.isLow
+                ? "bg-amber-50 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
+                : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+            }`}
+          >
+            {parity.text}
+          </span>
+        )}
+        {option.responsive && (
+          <span
+            className={`rounded px-1.5 py-0.5 text-[10px] font-medium leading-none ${
+              option.responsive.pass
+                ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                : "bg-amber-50 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
+            }`}
+          >
+            {option.responsive.pass ? "responsive" : "⚠ not responsive"}
+          </span>
+        )}
+        {option.renderOk === false && (
+          <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-red-700 dark:bg-red-900/30 dark:text-red-300">
+            ⚠ blank or broken render
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function sameIndexes(a: number[], b: number[]) {
+  return a.length === b.length && a.every((value, i) => value === b[i]);
 }
 
 // "🚀 Build app" panel: starts a build of the selected version and polls its
@@ -86,6 +158,31 @@ function BuildAppPanel({ runId, commitHash, versionNumber, settings }: Props) {
   const [isDisabledOnBackend, setIsDisabledOnBackend] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
+
+  // Which options to build: the selected option by default, or every option
+  // visual QA didn't mark as a duplicate.
+  const commits = useProjectStore((state) => state.commits);
+  const { optionCount, selectedIndex, visualQa } = buildOptionsFor(
+    commits,
+    commitHash
+  );
+  const distinct = useMemo(
+    () => distinctOptionIndices(optionCount, visualQa),
+    [optionCount, visualQa]
+  );
+  const [chosen, setChosen] = useState<number[]>([selectedIndex]);
+  useEffect(() => {
+    setChosen([selectedIndex]);
+  }, [commitHash, selectedIndex]);
+  const isAllDistinct = sameIndexes(chosen, distinct);
+
+  const toggleOption = (index: number) => {
+    setChosen((current) =>
+      current.includes(index)
+        ? current.filter((value) => value !== index)
+        : [...current, index].sort((a, b) => a - b)
+    );
+  };
 
   const reportError = useCallback((err: unknown) => {
     if (err instanceof RunsApiError && err.status === 403) {
@@ -148,7 +245,7 @@ function BuildAppPanel({ runId, commitHash, versionNumber, settings }: Props) {
     try {
       const started = await startBuild(
         runId,
-        buildStartBody(commitHash, settings)
+        buildStartBody(commitHash, settings, chosen)
       );
       setJob(started);
       setIsPolling(!isBuildFinished(started));
@@ -169,10 +266,66 @@ function BuildAppPanel({ runId, commitHash, versionNumber, settings }: Props) {
           Build app
         </h3>
         <p className="mt-0.5 text-xs text-gray-500 dark:text-zinc-400">
-          Turn every option of Version {versionNumber} into a running app with{" "}
-          <span className="font-mono">{settings.buildSystem}</span>.
+          Turn the chosen options of Version {versionNumber} into running
+          apps with <span className="font-mono">{settings.buildSystem}</span>.
         </p>
       </div>
+
+      {optionCount > 1 && (
+        <fieldset
+          className="flex flex-col gap-1.5"
+          data-testid="build-option-picker"
+          disabled={isStarting || isInProgress}
+        >
+          <ul className="flex flex-wrap gap-x-3 gap-y-1">
+            {Array.from({ length: optionCount }, (_, index) => {
+              const qa = qaForOption(visualQa, index);
+              const duplicateOf = qa?.duplicateOf ?? null;
+              return (
+                <li key={index}>
+                  <label className="flex items-center gap-1.5 text-xs text-gray-700 dark:text-zinc-300">
+                    <input
+                      type="checkbox"
+                      className="accent-violet-600"
+                      checked={chosen.includes(index)}
+                      onChange={() => toggleOption(index)}
+                    />
+                    Option {index + 1}
+                    {index === selectedIndex && (
+                      <span className="text-[10px] text-gray-400 dark:text-zinc-500">
+                        (selected)
+                      </span>
+                    )}
+                    {duplicateOf !== null && (
+                      <span className="text-[10px] text-gray-400 dark:text-zinc-500">
+                        ≈ Option {duplicateOf + 1}
+                      </span>
+                    )}
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+          <label className="flex items-center gap-1.5 text-xs font-medium text-gray-700 dark:text-zinc-300">
+            <input
+              type="checkbox"
+              className="accent-violet-600"
+              checked={isAllDistinct}
+              onChange={(event) =>
+                setChosen(event.target.checked ? distinct : [selectedIndex])
+              }
+              data-testid="build-all-distinct"
+            />
+            Build all distinct options
+            {distinct.length < optionCount && (
+              <span className="font-normal text-gray-400 dark:text-zinc-500">
+                ({optionCount - distinct.length} duplicate
+                {optionCount - distinct.length === 1 ? "" : "s"} skipped)
+              </span>
+            )}
+          </label>
+        </fieldset>
+      )}
 
       {isDisabledOnBackend ? (
         <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-2.5 dark:border-amber-700/60 dark:bg-amber-900/20">
@@ -205,7 +358,7 @@ function BuildAppPanel({ runId, commitHash, versionNumber, settings }: Props) {
       <Button
         size="sm"
         onClick={handleStart}
-        disabled={isStarting || isInProgress}
+        disabled={isStarting || isInProgress || chosen.length === 0}
         data-testid="build-app-start"
       >
         {isStarting
