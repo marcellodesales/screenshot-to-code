@@ -222,3 +222,47 @@ class TestModelSelectionNoKeys:
                 anthropic_api_key=None,
                 gemini_api_key=None,
             )
+
+    @pytest.mark.asyncio
+    async def test_no_keys_reports_generic_missing_key_error(self):
+        """No keys: the client is told that no provider key was found."""
+        mock_throw_error = AsyncMock()
+        model_selector = ModelSelectionStage(mock_throw_error)
+
+        with pytest.raises(Exception, match="No API key"):
+            await model_selector.select_models(
+                generation_type="create",
+                input_mode="image",
+                openai_api_key=None,
+                anthropic_api_key=None,
+                gemini_api_key=None,
+            )
+
+        mock_throw_error.assert_awaited_once()
+        assert "No OpenAI, Anthropic, or Gemini API key found" in (
+            mock_throw_error.await_args_list[0].args[0]
+        )
+
+
+class TestModelSelectionVideoWithoutGemini:
+    """Video mode needs Gemini even when other provider keys are present."""
+
+    @pytest.mark.asyncio
+    async def test_video_without_gemini_reports_gemini_requirement(self):
+        """The client sees the Gemini requirement, not the generic no-key error."""
+        mock_throw_error = AsyncMock()
+        model_selector = ModelSelectionStage(mock_throw_error)
+
+        with pytest.raises(Exception, match="No API key"):
+            await model_selector.select_models(
+                generation_type="create",
+                input_mode="video",
+                openai_api_key="key",
+                anthropic_api_key="key",
+                gemini_api_key=None,
+            )
+
+        mock_throw_error.assert_awaited_once()
+        message = mock_throw_error.await_args_list[0].args[0]
+        assert "Video mode requires a Gemini API key" in message
+        assert "No OpenAI, Anthropic, or Gemini API key found" not in message

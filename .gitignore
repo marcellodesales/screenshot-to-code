@@ -24,3 +24,6 @@ frontend/.env.local
 
 # Walkthrough demo videos
 walkthrough/
+
+# Docker compose backend volume (generated UIs, run logs, assets)
+/data/

@@ -408,6 +408,10 @@ class ParameterExtractionStage:
         return None
 
 
+class MissingApiKeyError(Exception):
+    """Raised when the API keys needed for the request are missing; the message is shown to the user"""
+
+
 class ModelSelectionStage:
     """Handles selection of variant models based on available API keys and generation type"""
 
@@ -440,12 +444,8 @@ class ModelSelectionStage:
                 print(f"Variant {index + 1}: {model.value}")
 
             return variant_models
-        except Exception:
-            await self.throw_error(
-                "No OpenAI, Anthropic, or Gemini API key found. Please add the environment variable "
-                "OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY to backend/.env or in the settings dialog. "
-                "If you add it to .env, make sure to restart the backend server."
-            )
+        except MissingApiKeyError as e:
+            await self.throw_error(str(e))
             raise Exception("No API key")
 
     def _get_variant_models(
@@ -462,9 +462,10 @@ class ModelSelectionStage:
         # Video mode requires Gemini - 2 variants for comparison
         if input_mode == "video":
             if not gemini_api_key:
-                raise Exception(
+                raise MissingApiKeyError(
                     "Video mode requires a Gemini API key. "
-                    "Please add GEMINI_API_KEY to backend/.env or in the settings dialog"
+                    "Please add GEMINI_API_KEY to backend/.env or in the settings dialog. "
+                    "If you add it to .env, make sure to restart the backend server."
                 )
             return list(VIDEO_VARIANT_MODELS)
 
@@ -489,7 +490,11 @@ class ModelSelectionStage:
         elif openai_api_key:
             models = list(OPENAI_ONLY_MODELS)
         else:
-            raise Exception("No OpenAI or Anthropic key")
+            raise MissingApiKeyError(
+                "No OpenAI, Anthropic, or Gemini API key found. Please add the environment variable "
+                "OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY to backend/.env or in the settings dialog. "
+                "If you add it to .env, make sure to restart the backend server."
+            )
 
         # Cycle through models: [A, B] with num=5 becomes [A, B, A, B, A]
         selected_models: List[Llm] = []

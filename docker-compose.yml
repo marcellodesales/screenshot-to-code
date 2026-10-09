@@ -2,6 +2,7 @@ version: '3.9'
 
 services:
   backend:
+    image: ohanalabs-ai/screenshot-to-code-backend
     build: 
       context: ./backend
       dockerfile: Dockerfile
@@ -14,14 +15,37 @@ services:
       #- BACKEND_PORT=7001   # if you change the port, make sure to also change the VITE_WS_BACKEND_URL at frontend/.env.local
       # - OPENAI_API_KEY=your_openai_api_key
     
+    # Persist everything the backend writes to ./data on the host:
+    #   data/run_logs/agent_runs/{run_id}/final.html  generated UI per variant
+    #     (plus final_selfcontained.html, assets/, events.jsonl, run.json)
+    #   data/run_logs/prompt_reports/                 per-LLM-call JSON reports
+    #   data/local_assets/                            uploaded/generated images
+    #   data/design-systems.json                      saved design systems
+    # Uploaded videos are not stored; they are sent to Gemini in memory.
+    environment:
+      - PROMPT_REPORTS_ENABLED=true
+      - LOGS_PATH=/data
+      - LOCAL_ASSET_DIR=/data/local_assets
+      - SCREENSHOT_TO_CODE_DATA_DIR=/data
+    volumes:
+      - ./data:/data
+
     ports:
       - "${BACKEND_PORT:-7001}:${BACKEND_PORT:-7001}"
 
     command: poetry run uvicorn main:app --host 0.0.0.0 --port ${BACKEND_PORT:-7001}
   
   frontend:
+    image: ohanalabs-ai/screenshot-to-code-frontend
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    # The Vite dev server proxies /api, /generate-code and /local-assets to the
+    # backend. Inside this container 127.0.0.1 is the frontend itself, so point
+    # the proxy at the backend service on the compose network instead.
+    environment:
+      - PROXY_CODEGEN_BACKEND=http://backend:${BACKEND_PORT:-7001}
+    depends_on:
+      - backend
     ports:
       - "5173:5173"
