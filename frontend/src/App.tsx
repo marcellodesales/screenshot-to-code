@@ -75,6 +75,7 @@ function App() {
     resetExecutionConsoles,
     setRunId,
     setCommitGitSha,
+    setCommitVisualQa,
   } = useProjectStore();
 
   const {
@@ -296,7 +297,11 @@ function App() {
 
     // Re-run the initial create request.
     if (inputMode === "image" || inputMode === "video") {
-      doCreate(referenceImages, inputMode);
+      const previousFrames =
+        currentCommit.type === "ai_create"
+          ? currentCommit.inputs.videoFrames
+          : undefined;
+      doCreate(referenceImages, inputMode, "", true, previousFrames);
     } else {
       doCreateFromText(initialPrompt);
     }
@@ -562,6 +567,9 @@ function App() {
       onVersionCommitted: (commitHash, gitSha) => {
         setCommitGitSha(commitHash, gitSha);
       },
+      onVisualQa: (data) => {
+        setCommitVisualQa(data.commitHash, data);
+      },
       onCancel: (reason, errorMessage) => {
         // The project may have been reset while this generation was still in
         // flight — a stale cancellation must not mutate app state.
@@ -604,7 +612,8 @@ function App() {
     referenceImages: string[],
     inputMode: "image" | "video",
     textPrompt: string = "",
-    isAssetExtractionEnabled = true
+    isAssetExtractionEnabled = true,
+    videoFrames: string[] = []
   ) {
     // Reset any existing state
     reset();
@@ -647,6 +656,9 @@ function App() {
           text: textPrompt,
           images: inputMode === "image" ? media : [],
           videos: inputMode === "video" ? media : [],
+          ...(inputMode === "video" && videoFrames.length > 0
+            ? { videoFrames }
+            : {}),
         },
         // Asset extraction operates on still screenshots. Video data uses the
         // same transport shape for Gemini, so explicitly disable extraction

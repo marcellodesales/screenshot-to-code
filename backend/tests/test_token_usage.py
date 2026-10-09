@@ -291,6 +291,12 @@ class TestModelPricing:
             "claude-opus-4-8",
             "gemini-3.5-flash",
             "gemini-3.6-flash",
+            "gemini-3.8-flash",
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "gpt-5.6-luna",
         ]:
             assert name in MODEL_PRICING, f"missing pricing for {name}"
 
@@ -298,7 +304,15 @@ class TestModelPricing:
         assert MODEL_PRICING.get("nonexistent-model") is None
 
     def test_anthropic_has_cache_write_rate(self) -> None:
-        for name in ["claude-opus-5", "claude-opus-4-8", "claude-sonnet-4-6"]:
+        for name in [
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-sonnet-4-6",
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+        ]:
             assert MODEL_PRICING[name].cache_write > 0
 
     def test_openai_gemini_no_cache_write(self) -> None:

@@ -1,5 +1,7 @@
 from typing import Optional
 
+from playwright.async_api import Browser
+
 from babel_cdn import normalize_babel_cdn
 from preview_screenshot.base import ScreenshotBackend
 from preview_screenshot.playwright_backend import PlaywrightBackend
@@ -11,6 +13,9 @@ _backend: ScreenshotBackend = PlaywrightBackend()
 # Cached result of the startup probe: whether _backend can run here. None until
 # the first probe runs. Used to gate the tool so it isn't offered when it can't.
 _available: Optional[bool] = None
+
+# Used only when the active backend is not local Chromium (so has no browser).
+_fallback_chromium: Optional[PlaywrightBackend] = None
 
 
 def set_screenshot_backend(backend: ScreenshotBackend) -> None:
@@ -49,3 +54,18 @@ async def capture_preview_screenshot(
     pages (old and new) actually mount before we capture.
     """
     return await _backend.capture(normalize_babel_cdn(html), device, full_page)
+
+
+async def shared_chromium() -> Browser:
+    """The headless Chromium the preview tool uses, for other in-process renderers.
+
+    Visual QA renders through this same browser instead of launching its own.
+    If a deployment swapped in a non-Chromium backend, a local Chromium is
+    started lazily (the same Playwright install, never a new browser).
+    """
+    global _fallback_chromium
+    if isinstance(_backend, PlaywrightBackend):
+        return await _backend.get_browser()
+    if _fallback_chromium is None:
+        _fallback_chromium = PlaywrightBackend()
+    return await _fallback_chromium.get_browser()

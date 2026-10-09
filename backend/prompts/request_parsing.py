@@ -2,12 +2,22 @@ from typing import List, cast
 
 from prompts.prompt_types import PromptHistoryMessage, UserTurnInput
 
+# The browser samples 1 frame/s up to 20; never trust the client for the cap.
+MAX_VIDEO_FRAMES = 20
+
 
 def _to_string_list(value: object) -> List[str]:
     if not isinstance(value, list):
         return []
     raw_list = cast(List[object], value)
     return [item for item in raw_list if isinstance(item, str)]
+
+
+def _cap_video_frames(frames: List[str]) -> List[str]:
+    if len(frames) <= MAX_VIDEO_FRAMES:
+        return frames
+    # Keep the first frames and always the last one (the final state).
+    return frames[: MAX_VIDEO_FRAMES - 1] + [frames[-1]]
 
 
 def parse_prompt_content(raw_prompt: object) -> UserTurnInput:
@@ -25,6 +35,10 @@ def parse_prompt_content(raw_prompt: object) -> UserTurnInput:
     full_text = prompt_dict.get("fullText")
     if isinstance(full_text, str) and full_text.strip():
         parsed["full_text"] = full_text
+
+    video_frames = _to_string_list(prompt_dict.get("videoFrames"))
+    if video_frames:
+        parsed["video_frames"] = _cap_video_frames(video_frames)
 
     return parsed
 

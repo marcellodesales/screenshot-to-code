@@ -225,3 +225,46 @@ describe("manual edits", () => {
     expect(useProjectStore.getState().commits).toEqual({});
   });
 });
+
+describe("visual QA", () => {
+  beforeEach(() => {
+    useProjectStore.setState({
+      commits: {},
+      head: null,
+      latestCommitHash: null,
+      runId: null,
+    });
+  });
+
+  const qa = {
+    commitHash: "v1",
+    options: [
+      {
+        index: 0,
+        screenshot: "/api/runs/r/qa/v1/op0-1280.png",
+        renderOk: true,
+        error: null,
+        duplicateOf: null,
+        similarity: null,
+        responsive: { pass: true, widths: [] },
+      },
+    ],
+  };
+
+  it("setCommitVisualQa stores QA on the commit, even once committed", () => {
+    const store = useProjectStore.getState();
+    store.addCommit({ ...createGeneratingCommit(), hash: "v1" });
+    store.addCommit({ ...createGeneratingCommit(), hash: "v2" });
+
+    store.setCommitVisualQa("v1", qa);
+
+    const commit = useProjectStore.getState().commits["v1"];
+    expect(commit.isCommitted).toBe(true);
+    expect(commit.visualQa).toEqual(qa);
+  });
+
+  it("setCommitVisualQa ignores unknown commits", () => {
+    useProjectStore.getState().setCommitVisualQa("missing", qa);
+    expect(useProjectStore.getState().commits["missing"]).toBeUndefined();
+  });
+});

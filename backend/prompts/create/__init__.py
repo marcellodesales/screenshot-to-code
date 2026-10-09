@@ -1,7 +1,10 @@
 from custom_types import InputMode
 from prompts.create.image import build_image_prompt_messages
 from prompts.create.text import build_text_prompt_messages
-from prompts.create.video import build_video_prompt_messages
+from prompts.create.video import (
+    build_video_frames_prompt_messages,
+    build_video_prompt_messages,
+)
 from prompts.prompt_types import Stack, UserTurnInput
 from prompts.message_builder import Prompt
 
@@ -12,6 +15,7 @@ def build_create_prompt_from_input(
     prompt: UserTurnInput,
     image_generation_enabled: bool,
     design_system: str | None = None,
+    use_video_frames: bool = False,
 ) -> Prompt:
     if input_mode == "image":
         image_urls = prompt.get("images", [])
@@ -27,6 +31,17 @@ def build_create_prompt_from_input(
         return build_text_prompt_messages(
             text_prompt=prompt["text"],
             stack=stack,
+            image_generation_enabled=image_generation_enabled,
+            design_system=design_system,
+        )
+    if input_mode == "video" and use_video_frames:
+        frames = prompt.get("video_frames", [])
+        if not frames:
+            raise ValueError("Video frames prompt requires extracted frames")
+        return build_video_frames_prompt_messages(
+            frame_data_urls=frames,
+            stack=stack,
+            text_prompt=prompt.get("text", ""),
             image_generation_enabled=image_generation_enabled,
             design_system=design_system,
         )

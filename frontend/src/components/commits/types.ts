@@ -1,3 +1,4 @@
+import type { VisualQaData } from "../../lib/visualQa";
 import { PromptContent, PromptMessageRole } from "../../types";
 
 export type CommitHash = string;
@@ -50,6 +51,8 @@ export type BaseCommit = {
   // Git SHA of this version in the backend run workspace (set once the
   // backend sends `versionCommitted` or acknowledges a manual-edit save).
   gitSha?: string;
+  // Visual QA of this version's options (backend `visualQa` message).
+  visualQa?: VisualQaData;
 };
 
 export type CommitType = "ai_create" | "ai_edit" | "code_create" | "code_edit";

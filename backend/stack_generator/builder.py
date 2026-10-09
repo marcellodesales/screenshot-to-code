@@ -1,40 +1,64 @@
 """The "Build app" pipeline (spec §7): version mocks -> stack app -> commit -> compose up.
 
 Per option: scaffold (``scaffold.sh``; static templates are copied), migrate the
-mock, write ``.env``; then one ``commit_app`` for every prepared option; then
-``docker compose up -d --build --wait`` per option. Options run concurrently
-and one option failing never stops the others.
+mock, write ``.env``, ``docker compose build``. When a scaffolded app's build
+fails, the LLM gets the end of the build log and repairs the migrated files (at
+most ``MAX_BUILD_REPAIRS`` times). Then one ``commit_app`` for every option
+that built; then ``docker compose up -d --wait`` per option. An option whose
+build never succeeds is failed and removed, never committed. Options run
+concurrently and one option failing never stops the others.
+
+Only the requested options are built; by default every option that visual QA
+(``qa/<ui-commit-hash>/qa.json``) didn't mark as a duplicate. Once an app is up
+it is screenshotted through the gateway and compared with its mock (parity).
 
 Docker runs against the host daemon through the mounted socket, so nothing
 here relies on bind mounts (spec §7.1).
 """
 
 import asyncio
+import re
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable, Literal, Protocol
+from typing import Any, Awaitable, Callable, Literal, Protocol, cast
 
+from stack_generator import visual_qa
 from stack_generator.catalog import StackTemplate, load_catalog, resolve_template
 from stack_generator.migrate import (
     MigrationLlm,
     apply_system_fonts,
     default_migration_llm,
     migrate_mock,
+    repair_migration,
 )
 from stack_generator.naming import app_id_for, app_slug_from_prompt
 from stack_generator.workspace import RunWorkspace
 
 OptionState = Literal[
-    "queued", "scaffolding", "migrating", "committing", "starting", "running", "failed"
+    "queued",
+    "scaffolding",
+    "migrating",
+    "building",
+    "committing",
+    "starting",
+    "running",
+    "failed",
 ]
 CommandRunner = Callable[[list[str], Path], Awaitable[str]]
 
 GATEWAY_PORT = 3311
 COMMAND_TIMEOUT_SECONDS = 15 * 60
+APP_QA_TIMEOUT_SECONDS = 90
 _ERROR_LIMIT = 2000
+# LLM repairs of a failed `docker compose build` before the option fails.
+MAX_BUILD_REPAIRS = 2
+# Build-log lines sent to the repair call / kept in the option's error.
+_REPAIR_LOG_LINES = 120
+_ERROR_LOG_LINES = 25
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _FIRST_BUILD_MESSAGE = ":tada: First version"
 # Each build commit is pinned as refs/s2c/builds/<k> (k = 1, 2, ...).
 _BUILD_REF_PREFIX = "refs/s2c/builds/"
@@ -50,6 +74,18 @@ class MigrationLlmFactory(Protocol):
     ) -> MigrationLlm: ...
 
 
+class AppQa(Protocol):
+    """Screenshots a running app and compares it with its mock (``visual_qa.app_qa``)."""
+
+    async def __call__(
+        self,
+        workspace: RunWorkspace,
+        ui_commit_hash: str,
+        option_index: int,
+        app_host: str,
+    ) -> dict[str, Any]: ...
+
+
 @dataclass
 class OptionStatus:
     index: int
@@ -57,6 +93,11 @@ class OptionStatus:
     step_message: str
     url: str | None
     error: str | None
+    # Visual QA of the running app (None until checked, or if it couldn't be).
+    screenshot: str | None = None
+    parity: float | None = None
+    responsive: dict[str, Any] | None = None
+    render_ok: bool | None = None
 
 
 @dataclass
@@ -73,6 +114,14 @@ class BuildJob:
 
 
 class CommandError(RuntimeError):
+    """A failed command; ``output`` is its full stdout + stderr."""
+
+    def __init__(self, message: str, *, output: str = "") -> None:
+        super().__init__(message)
+        self.output = output
+
+
+class BuildError(RuntimeError):
     pass
 
 
@@ -94,8 +143,10 @@ async def run_command(argv: list[str], cwd: Path) -> str:
         raise CommandError(f"{argv[0]} timed out after {COMMAND_TIMEOUT_SECONDS}s")
     if process.returncode != 0:
         detail = (stderr or stdout).decode("utf-8", "replace").strip()
+        output = (stdout + stderr).decode("utf-8", "replace")
         raise CommandError(
-            f"{Path(argv[0]).name} exited with {process.returncode}: {detail[-_ERROR_LIMIT:]}"
+            f"{Path(argv[0]).name} exited with {process.returncode}: {detail[-_ERROR_LIMIT:]}",
+            output=output,
         )
     return stdout.decode("utf-8", "replace")
 
@@ -103,6 +154,26 @@ async def run_command(argv: list[str], cwd: Path) -> str:
 def _error_text(exc: BaseException) -> str:
     text = str(exc) or type(exc).__name__
     return text[-_ERROR_LIMIT:]
+
+
+def _log_tail(text: str, lines: int) -> str:
+    """Last ``lines`` non-empty lines, without ANSI escapes."""
+    kept = [line.rstrip() for line in _ANSI_RE.sub("", text).splitlines() if line.strip()]
+    return "\n".join(kept[-lines:])
+
+
+def _command_output(exc: BaseException) -> str:
+    if isinstance(exc, CommandError) and exc.output.strip():
+        return exc.output
+    return str(exc) or type(exc).__name__
+
+
+def _build_error(output: str, repairs: int) -> str:
+    reason = "Build failed" + (
+        f" after {repairs} repair attempt{'s' if repairs != 1 else ''}" if repairs else ""
+    )
+    tail = _log_tail(output, _ERROR_LOG_LINES)
+    return f"{reason}:\n{tail[-(_ERROR_LIMIT - len(reason) - 2):]}"
 
 
 def _app_title(slug: str) -> str:
@@ -126,6 +197,36 @@ def _copy_static_template(template: StackTemplate, app_dir: Path) -> None:
         app_dir,
         ignore=shutil.ignore_patterns("tests", "template.yaml", ".env"),
     )
+
+
+def _default_options(
+    workspace: RunWorkspace, ui_commit_hash: str, option_count: int
+) -> list[int]:
+    """Every option, minus those visual QA marked as duplicates."""
+    qa = visual_qa.read_qa(workspace, ui_commit_hash)
+    duplicates: set[int] = set()
+    raw: Any = qa.get("options") if qa else None
+    entries = cast(list[Any], raw) if isinstance(raw, list) else []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        option = cast(dict[str, Any], entry)
+        index = option.get("index")
+        if isinstance(index, int) and option.get("duplicateOf") is not None:
+            duplicates.add(index)
+    selected = [i for i in range(option_count) if i not in duplicates]
+    return selected or list(range(option_count))
+
+
+def _checked_options(options: list[int], option_count: int) -> list[int]:
+    if not options:
+        raise ValueError("Select at least one option to build")
+    if len(set(options)) != len(options):
+        raise ValueError("Options must not repeat")
+    for index in options:
+        if not 0 <= index < option_count:
+            raise ValueError(f"Unknown option {index} (this version has {option_count})")
+    return sorted(options)
 
 
 def _git(workspace: RunWorkspace, *args: str) -> str:
@@ -171,8 +272,10 @@ class BuildManager:
         *,
         runs_dir: Path | None = None,
         templates_dir: Path | None = None,
+        app_qa: AppQa | None = None,
     ) -> None:
         self._runner = runner
+        self._app_qa: AppQa = app_qa if app_qa is not None else visual_qa.app_qa
         self._llm_factory = llm_factory
         self._runs_dir = runs_dir
         self._templates_dir = templates_dir
@@ -188,11 +291,15 @@ class BuildManager:
         ui_commit_hash: str,
         build_system: str,
         api_keys: dict[str, str | None],
+        options: list[int] | None = None,
     ) -> BuildJob:
         """Start a build; while one is in progress for the run, return it.
 
+        ``options`` are 0-based option indices; ``None`` builds every option
+        visual QA didn't mark as a duplicate (all of them without QA).
         Raises ``LookupError`` for an unknown run/version and ``ValueError``
-        when no template fits the source stack + build system. No ``await``
+        when no template fits the source stack + build system or the options
+        are invalid. No ``await``
         happens between the in-progress check and registering the job, so two
         concurrent requests can never start two builds of one run.
         """
@@ -212,6 +319,11 @@ class BuildManager:
             load_catalog(self._templates_dir),
         )
         option_count = len(workspace.option_codes(ui_commit_hash))
+        indices = (
+            _default_options(workspace, ui_commit_hash, option_count)
+            if options is None
+            else _checked_options(options, option_count)
+        )
         job = BuildJob(
             run_id=run_id,
             ui_commit_hash=ui_commit_hash,
@@ -219,7 +331,7 @@ class BuildManager:
             template_id=template.id,
             options=[
                 OptionStatus(index=i, state="queued", step_message="Queued", url=None, error=None)
-                for i in range(option_count)
+                for i in indices
             ],
         )
         slug = app_slug_from_prompt(str(metadata.get("prompt") or ""), run_id)
@@ -326,12 +438,69 @@ class BuildManager:
             (app_dir / ".env").write_text(
                 f"APP_ID={app_id}\nAPP_HOST={app_id}.localhost\n", encoding="utf-8"
             )
+            sources = [path for path in files if path != template.mock_path]
+            await self._build(option, app_dir, template, sources, llm, title)
             return app_dir
         except Exception as exc:
             self._fail(option, exc)
             # Never commit a half-built app.
             await asyncio.to_thread(shutil.rmtree, app_dir, True)
             return None
+
+    async def _build(
+        self,
+        option: OptionStatus,
+        app_dir: Path,
+        template: StackTemplate,
+        sources: list[str],
+        llm: MigrationLlm,
+        title: str,
+    ) -> None:
+        """``docker compose build``; on failure repair the migrated files and retry.
+
+        Raises ``BuildError`` once the build failed ``MAX_BUILD_REPAIRS + 1``
+        times (static templates: once) or a repair was invalid. Repairs only
+        touch ``src/``/``public/`` (migration targets), so the lockfile stays.
+        """
+        repairs = 0
+        while True:
+            self._set(option, "building", "Building")
+            try:
+                await self._runner(
+                    [
+                        "docker", "compose", "--progress", "plain",
+                        "--project-directory", str(app_dir), "build",
+                    ],
+                    app_dir,
+                )
+                return
+            except Exception as exc:
+                output = _command_output(exc)
+                if not template.has_scaffold or repairs >= MAX_BUILD_REPAIRS:
+                    raise BuildError(_build_error(output, repairs)) from exc
+
+            repairs += 1
+            self._set(
+                option, "building", f"Repairing build (attempt {repairs}/{MAX_BUILD_REPAIRS})"
+            )
+            current = {
+                path: (app_dir / path).read_text(encoding="utf-8")
+                for path in sources
+                if (app_dir / path).is_file()
+            }
+            try:
+                repaired = await repair_migration(
+                    files=current,
+                    build_log=_log_tail(output, _REPAIR_LOG_LINES),
+                    template=template,
+                    llm=llm,
+                )
+            except Exception as exc:
+                raise BuildError(f"Build repair failed: {_error_text(exc)}") from exc
+            _write_files(app_dir, repaired)
+            # layout.tsx is the tool's: keep it (and the system fonts) intact.
+            apply_system_fonts(app_dir, title)
+            sources = sorted(set(sources) | set(repaired))
 
     def _llm_for(
         self, template: StackTemplate, api_keys: dict[str, str | None]
@@ -370,12 +539,13 @@ class BuildManager:
         return True
 
     async def _start(self, job: BuildJob, option: OptionStatus, app_dir: Path) -> None:
-        self._set(option, "starting", "docker compose up --build")
+        # Already built (before the commit): just start the image.
+        self._set(option, "starting", "docker compose up")
         try:
             await self._runner(
                 [
                     "docker", "compose", "--project-directory", str(app_dir),
-                    "up", "-d", "--build", "--wait",
+                    "up", "-d", "--wait",
                 ],
                 app_dir,
             )
@@ -384,7 +554,32 @@ class BuildManager:
             return
         app_id = app_id_for(job.run_id, option.index)
         option.url = f"http://{app_id}.localhost:{GATEWAY_PORT}/"
-        self._set(option, "running", "Running")
+        # Checked before flipping to "running" so a client that stops polling
+        # once every option is running/failed still sees the result.
+        option.step_message = "Comparing the app with its mock"
+        message = await self._check_app(job, option, f"{app_id}.localhost")
+        self._set(option, "running", message)
+
+    async def _check_app(self, job: BuildJob, option: OptionStatus, app_host: str) -> str:
+        """Best-effort app screenshot + parity; returns the running step message."""
+        workspace = RunWorkspace.open(job.run_id, self._runs_dir)
+        if workspace is None:
+            return "Running"
+        try:
+            result = await asyncio.wait_for(
+                self._app_qa(workspace, job.ui_commit_hash, option.index, app_host),
+                timeout=APP_QA_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # incl. timeouts: QA never fails a build
+            print(f"[BUILD] App QA skipped for option {option.index + 1}: {exc}")
+            return "Running"
+        option.screenshot = result.get("screenshot")
+        option.parity = result.get("parity")
+        option.responsive = result.get("responsive")
+        option.render_ok = result.get("render_ok")
+        if option.parity is not None and option.parity < visual_qa.PARITY_WARNING:
+            return f"Running — differs from mock (parity {option.parity:.2f})"
+        return "Running"
 
     # -- state helpers -------------------------------------------------------
 

@@ -64,6 +64,13 @@ def _get_gemini_api_model_name(model: Llm) -> str:
     ]:
         return "gemini-3.6-flash"
     if model in [
+        Llm.GEMINI_3_8_FLASH_HIGH,
+        Llm.GEMINI_3_8_FLASH_MEDIUM,
+        Llm.GEMINI_3_8_FLASH_LOW,
+        Llm.GEMINI_3_8_FLASH_MINIMAL,
+    ]:
+        return "gemini-3.8-flash"
+    if model in [
         Llm.GEMINI_3_1_PRO_PREVIEW_HIGH,
         Llm.GEMINI_3_1_PRO_PREVIEW_MEDIUM,
         Llm.GEMINI_3_1_PRO_PREVIEW_LOW,
@@ -78,24 +85,28 @@ def _get_thinking_level_for_model(model: Llm) -> str:
         Llm.GEMINI_3_1_PRO_PREVIEW_HIGH,
         Llm.GEMINI_3_5_FLASH_HIGH,
         Llm.GEMINI_3_6_FLASH_HIGH,
+        Llm.GEMINI_3_8_FLASH_HIGH,
     ]:
         return "high"
     if model in [
         Llm.GEMINI_3_1_PRO_PREVIEW_LOW,
         Llm.GEMINI_3_5_FLASH_LOW,
         Llm.GEMINI_3_6_FLASH_LOW,
+        Llm.GEMINI_3_8_FLASH_LOW,
     ]:
         return "low"
     if model in [
         Llm.GEMINI_3_1_PRO_PREVIEW_MEDIUM,
         Llm.GEMINI_3_5_FLASH_MEDIUM,
         Llm.GEMINI_3_6_FLASH_MEDIUM,
+        Llm.GEMINI_3_8_FLASH_MEDIUM,
     ]:
         return "medium"
     if model in [
         Llm.GEMINI_3_FLASH_PREVIEW_MINIMAL,
         Llm.GEMINI_3_5_FLASH_MINIMAL,
         Llm.GEMINI_3_6_FLASH_MINIMAL,
+        Llm.GEMINI_3_8_FLASH_MINIMAL,
     ]:
         return "minimal"
     return "high"

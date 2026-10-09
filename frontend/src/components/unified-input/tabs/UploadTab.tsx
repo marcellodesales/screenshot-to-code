@@ -7,6 +7,22 @@ import ScreenRecorder from "../../recording/ScreenRecorder";
 import { DesignSystemSelectorProps } from "../../settings/DesignSystemSelector";
 import { Stack } from "../../../lib/stacks";
 import ScreenshotToCodeControls from "../ScreenshotToCodeControls";
+import { extractVideoFrames } from "../../../lib/videoFrames";
+
+type FrameExtraction =
+  | { status: "idle" }
+  | { status: "extracting" }
+  | { status: "done"; count: number }
+  | { status: "failed" };
+
+// Frames for non-Gemini models. A failure only means no frames are sent: the
+// video itself still goes to the backend.
+function framesOrNone(src: string): Promise<string[]> {
+  return extractVideoFrames(src).catch((error) => {
+    console.warn("Video frame extraction failed; sending the video only", error);
+    return [];
+  });
+}
 
 function fileToDataURL(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -48,11 +64,35 @@ interface Props {
     referenceImages: string[],
     inputMode: "image" | "video",
     textPrompt?: string,
-    isAssetExtractionEnabled?: boolean
+    isAssetExtractionEnabled?: boolean,
+    videoFrames?: string[]
   ) => void;
   stack: Stack;
   setStack: (stack: Stack) => void;
   designSystem: DesignSystemSelectorProps;
+}
+
+function FrameExtractionStatus({
+  extraction,
+}: {
+  extraction: FrameExtraction;
+}) {
+  if (extraction.status === "idle") return null;
+  const text =
+    extraction.status === "extracting"
+      ? "Extracting frames…"
+      : extraction.status === "done"
+        ? `${extraction.count} frame${extraction.count === 1 ? "" : "s"} extracted`
+        : "Frames unavailable — the video is sent as is";
+  return (
+    <p
+      className="mt-2 text-xs text-gray-500 dark:text-zinc-400"
+      data-testid="video-frames-status"
+      aria-live="polite"
+    >
+      {text}
+    </p>
+  );
 }
 
 function UploadTab({ doCreate, stack, setStack, designSystem }: Props) {
@@ -68,20 +108,50 @@ function UploadTab({ doCreate, stack, setStack, designSystem }: Props) {
   const filesRef = useRef<FileWithPreview[]>([]);
   const [screenRecorderState, setScreenRecorderState] =
     useState<ScreenRecorderState>(ScreenRecorderState.INITIAL);
+  const [frameExtraction, setFrameExtraction] = useState<FrameExtraction>({
+    status: "idle",
+  });
+  // Resolves to the current video's frames ([] on failure); generation waits
+  // for it so frames are not lost by clicking Generate early.
+  const framesRef = useRef<Promise<string[]>>(Promise.resolve([]));
+  const extractionIdRef = useRef(0);
+
+  const startFrameExtraction = useCallback((src: string) => {
+    const id = ++extractionIdRef.current;
+    setFrameExtraction({ status: "extracting" });
+    const frames = framesOrNone(src);
+    framesRef.current = frames;
+    frames.then((result) => {
+      if (extractionIdRef.current !== id) return;
+      setFrameExtraction(
+        result.length > 0
+          ? { status: "done", count: result.length }
+          : { status: "failed" }
+      );
+    });
+  }, []);
+
+  const resetFrameExtraction = useCallback(() => {
+    extractionIdRef.current++;
+    framesRef.current = Promise.resolve([]);
+    setFrameExtraction({ status: "idle" });
+  }, []);
 
   const hasUploadedFile = uploadedDataUrls.length > 0;
   const remainingSlots = Math.max(0, MAX_FILES - files.length);
   const isAtLimit = remainingSlots === 0;
 
-  const handleGenerate = useCallback(() => {
-    if (uploadedDataUrls.length > 0) {
-      doCreate(
-        uploadedDataUrls,
-        uploadedInputMode,
-        textPrompt,
-        isAssetExtractionEnabled
-      );
-    }
+  const handleGenerate = useCallback(async () => {
+    if (uploadedDataUrls.length === 0) return;
+    const videoFrames =
+      uploadedInputMode === "video" ? await framesRef.current : [];
+    doCreate(
+      uploadedDataUrls,
+      uploadedInputMode,
+      textPrompt,
+      isAssetExtractionEnabled,
+      videoFrames
+    );
   }, [
     uploadedDataUrls,
     uploadedInputMode,
@@ -112,6 +182,7 @@ function UploadTab({ doCreate, stack, setStack, designSystem }: Props) {
     setTextPrompt("");
     setUploadedInputMode("image");
     setSelectedIndex(0);
+    resetFrameExtraction();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -174,6 +245,7 @@ function UploadTab({ doCreate, stack, setStack, designSystem }: Props) {
           setUploadedDataUrls(dataUrls as string[]);
           setUploadedInputMode("video");
           setSelectedIndex(0);
+          startFrameExtraction(newFiles[0].preview);
         } else {
           setFiles((prev) => [...prev, ...newFiles]);
           setUploadedDataUrls((prev) => [...prev, ...(dataUrls as string[])]);
@@ -190,7 +262,7 @@ function UploadTab({ doCreate, stack, setStack, designSystem }: Props) {
         console.error("Error reading files:", error);
       }
     },
-    [files, uploadedInputMode]
+    [files, uploadedInputMode, startFrameExtraction]
   );
 
   const {
@@ -263,11 +335,13 @@ function UploadTab({ doCreate, stack, setStack, designSystem }: Props) {
     return `${base} border-gray-200 dark:border-zinc-700`;
   }, [isFocused, isDragAccept, isDragReject]);
 
-  const handleScreenRecorderGenerate = (
+  const handleScreenRecorderGenerate = async (
     images: string[],
     inputMode: "image" | "video"
   ) => {
-    doCreate(images, inputMode, "");
+    const videoFrames =
+      inputMode === "video" && images[0] ? await framesOrNone(images[0]) : [];
+    doCreate(images, inputMode, "", true, videoFrames);
   };
 
   const handleRemoveImage = (index: number) => {
@@ -347,6 +421,7 @@ function UploadTab({ doCreate, stack, setStack, designSystem }: Props) {
                   className="w-full h-auto max-h-[400px] object-contain rounded-md border border-gray-100 dark:border-zinc-700"
                   controls
                 />
+                <FrameExtractionStatus extraction={frameExtraction} />
                 <button
                   onClick={handleClear}
                   className="absolute top-2 right-2 bg-white dark:bg-zinc-800 rounded-full p-1.5 shadow-md hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors"

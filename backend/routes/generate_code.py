@@ -22,6 +22,7 @@ from config import (
 )
 from custom_types import InputMode
 from llm import (
+    GEMINI_MODELS,
     Llm,
 )
 from typing import (
@@ -54,6 +55,7 @@ MessageType = Literal[
     "toolResult",
     "runInfo",
     "versionCommitted",
+    "visualQa",
 ]
 from prompts.pipeline import build_prompt_messages
 from prompts.request_parsing import parse_prompt_content, parse_prompt_history
@@ -65,11 +67,15 @@ from uploaded_assets import (
 )
 from agent.runner import Agent
 from fs_logging.agent_runs import AgentRunRecorder
+from stack_generator.visual_qa import run_version_qa
 from stack_generator.workspace import RunWorkspace, new_run_id
+
+# Visual QA runs after versionCommitted, before the socket closes; past this
+# budget it is skipped so it never holds up generation for long.
+VISUAL_QA_TIMEOUT_SECONDS = 20.0
 from routes.model_choice_sets import (
     ALL_KEYS_MODELS_DEFAULT,
     ALL_KEYS_MODELS_TEXT_CREATE,
-    ALL_KEYS_MODELS_UPDATE,
     ANTHROPIC_ONLY_MODELS,
     GEMINI_ANTHROPIC_MODELS,
     GEMINI_OPENAI_MODELS,
@@ -77,6 +83,8 @@ from routes.model_choice_sets import (
     OPENAI_ANTHROPIC_MODELS,
     OPENAI_ONLY_MODELS,
     VIDEO_VARIANT_MODELS,
+    update_variant_models,
+    video_frames_variant_models,
 )
 
 # from utils import pprint_prompt
@@ -95,6 +103,9 @@ class PipelineContext:
     params: Dict[str, Any] = field(default_factory=dict)
     extracted_params: "ExtractedParams | None" = None
     prompt_messages: List[ChatCompletionMessageParam] = field(default_factory=list)
+    # Video create with browser-extracted frames: the prompt for models that
+    # cannot take video input (they get the frames as images).
+    frames_prompt_messages: List[ChatCompletionMessageParam] | None = None
     variant_models: List[Llm] = field(default_factory=list)
     completions: List[str] = field(default_factory=list)
     variant_completions: Dict[int, str] = field(default_factory=dict)
@@ -440,6 +451,7 @@ class ModelSelectionStage:
         openai_api_key: str | None,
         anthropic_api_key: str | None,
         gemini_api_key: str | None = None,
+        has_video_frames: bool = False,
     ) -> List[Llm]:
         """Select appropriate models based on available API keys"""
         try:
@@ -451,6 +463,7 @@ class ModelSelectionStage:
                 openai_api_key,
                 anthropic_api_key,
                 gemini_api_key,
+                has_video_frames,
             )
 
             # Print the variant models (one per line)
@@ -471,11 +484,20 @@ class ModelSelectionStage:
         openai_api_key: str | None,
         anthropic_api_key: str | None,
         gemini_api_key: str | None,
+        has_video_frames: bool = False,
     ) -> List[Llm]:
         """Simple model cycling that scales with num_variants"""
 
-        # Video mode requires Gemini - 2 variants for comparison
+        # Video mode: 2 variants. Frames let Claude/GPT join; Gemini gets the video.
         if input_mode == "video":
+            if has_video_frames:
+                frame_models = video_frames_variant_models(
+                    openai=bool(openai_api_key),
+                    anthropic=bool(anthropic_api_key),
+                    gemini=bool(gemini_api_key),
+                )
+                if frame_models is not None:
+                    return list(frame_models)
             if not gemini_api_key:
                 raise MissingApiKeyError(
                     "Video mode requires a Gemini API key. "
@@ -484,12 +506,20 @@ class ModelSelectionStage:
                 )
             return list(VIDEO_VARIANT_MODELS)
 
+        # Updates: two options from two different providers when possible.
+        if generation_type == "update":
+            update_models = update_variant_models(
+                openai=bool(openai_api_key),
+                anthropic=bool(anthropic_api_key),
+                gemini=bool(gemini_api_key),
+            )
+            if update_models is not None:
+                return list(update_models)[:num_variants]
+
         # Define models based on available API keys
         if gemini_api_key and anthropic_api_key and openai_api_key:
             if input_mode == "text" and generation_type == "create":
                 models = list(ALL_KEYS_MODELS_TEXT_CREATE)
-            elif generation_type == "update":
-                models = list(ALL_KEYS_MODELS_UPDATE)
             else:
                 models = list(ALL_KEYS_MODELS_DEFAULT)
         elif gemini_api_key and anthropic_api_key:
@@ -528,6 +558,7 @@ class PromptCreationStage:
     async def build_prompt_messages(
         self,
         extracted_params: ExtractedParams,
+        use_video_frames: bool = False,
     ) -> List[ChatCompletionMessageParam]:
         """Create prompt messages"""
         try:
@@ -540,6 +571,7 @@ class PromptCreationStage:
                 file_state=extracted_params.file_state,
                 image_generation_enabled=extracted_params.should_generate_images,
                 design_system=extracted_params.design_system,
+                use_video_frames=use_video_frames,
             )
             print_prompt_preview(prompt_messages)
 
@@ -564,6 +596,20 @@ class PostProcessingStage:
     ) -> None:
         """Process completions and perform cleanup."""
         return None
+
+
+def variant_prompt_messages(
+    variant_models: List[Llm],
+    prompt_messages: List[ChatCompletionMessageParam],
+    frames_prompt_messages: List[ChatCompletionMessageParam] | None,
+) -> List[List[ChatCompletionMessageParam]]:
+    """Per-variant prompts: Gemini keeps the video, other models get the frames."""
+    return [
+        frames_prompt_messages
+        if frames_prompt_messages is not None and model not in GEMINI_MODELS
+        else prompt_messages
+        for model in variant_models
+    ]
 
 
 class AgenticGenerationStage:
@@ -610,12 +656,16 @@ class AgenticGenerationStage:
         self,
         variant_models: List[Llm],
         prompt_messages: List[ChatCompletionMessageParam],
+        frames_prompt_messages: List[ChatCompletionMessageParam] | None = None,
     ) -> Dict[int, str]:
+        prompts = variant_prompt_messages(
+            variant_models, prompt_messages, frames_prompt_messages
+        )
         tasks: List[asyncio.Task[str]] = []
         for index, model in enumerate(variant_models):
             tasks.append(
                 asyncio.create_task(
-                    self._run_variant(index, model, prompt_messages)
+                    self._run_variant(index, model, prompts[index])
                 )
             )
 
@@ -832,6 +882,28 @@ class RunWorkspaceMiddleware(Middleware):
             )
         except Exception as e:
             print(f"[RUN_WORKSPACE] Could not commit version: {e}")
+            return
+        await self._send_visual_qa(context, workspace, params.commit_hash)
+
+    @staticmethod
+    async def _send_visual_qa(
+        context: PipelineContext, workspace: RunWorkspace, commit_hash: str
+    ) -> None:
+        """Best-effort visual QA of the committed options (bounded; never fatal)."""
+        if getattr(context.ws_comm, "is_closed", False):
+            return  # Nobody is listening for the result.
+        try:
+            data = await asyncio.wait_for(
+                run_version_qa(workspace, commit_hash),
+                timeout=VISUAL_QA_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            print(f"[VISUAL_QA] Skipped: took over {VISUAL_QA_TIMEOUT_SECONDS}s")
+            return
+        except Exception as e:
+            print(f"[VISUAL_QA] Skipped: {e}")
+            return
+        await context.send_message("visualQa", None, 0, data)
 
     @staticmethod
     def _save_uploads(workspace: RunWorkspace, params: ExtractedParams) -> None:
@@ -844,6 +916,11 @@ class RunWorkspaceMiddleware(Middleware):
                 workspace.save_upload(kind, data_url)
             except ValueError:
                 pass  # Not a data URL (e.g. an already-hosted asset).
+        for number, frame in enumerate(params.prompt.get("video_frames", []), 1):
+            try:
+                workspace.save_upload("screenshots", frame, stem=f"frame-{number:02d}")
+            except ValueError:
+                pass
 
     @staticmethod
     def _commit(
@@ -898,6 +975,14 @@ class StatusBroadcastMiddleware(Middleware):
         await next_func()
 
 
+def _uses_video_frames(params: ExtractedParams) -> bool:
+    return (
+        params.input_mode == "video"
+        and params.generation_type == "create"
+        and bool(params.prompt.get("video_frames"))
+    )
+
+
 class PromptCreationMiddleware(Middleware):
     """Handles prompt creation"""
 
@@ -906,9 +991,14 @@ class PromptCreationMiddleware(Middleware):
     ) -> None:
         prompt_creator = PromptCreationStage(context.throw_error)
         assert context.extracted_params is not None
-        context.prompt_messages = await prompt_creator.build_prompt_messages(
-            context.extracted_params,
-        )
+        params = context.extracted_params
+        context.prompt_messages = await prompt_creator.build_prompt_messages(params)
+        if _uses_video_frames(params):
+            context.frames_prompt_messages = (
+                await prompt_creator.build_prompt_messages(
+                    params, use_video_frames=True
+                )
+            )
         await next_func()
 
 
@@ -929,6 +1019,7 @@ class CodeGenerationMiddleware(Middleware):
                 openai_api_key=context.extracted_params.openai_api_key,
                 anthropic_api_key=context.extracted_params.anthropic_api_key,
                 gemini_api_key=context.extracted_params.gemini_api_key,
+                has_video_frames=context.frames_prompt_messages is not None,
             )
             if IS_DEBUG_ENABLED:
                 await context.send_message(
@@ -959,6 +1050,7 @@ class CodeGenerationMiddleware(Middleware):
             context.variant_completions = await generation_stage.process_variants(
                 variant_models=context.variant_models,
                 prompt_messages=context.prompt_messages,
+                frames_prompt_messages=context.frames_prompt_messages,
             )
 
             # Check if all variants failed

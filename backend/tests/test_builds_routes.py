@@ -12,6 +12,7 @@ class FakeManager:
         self.started: list[tuple[str, str, str, dict[str, str | None]]] = []
         self.jobs: dict[str, BuildJob] = {}
         self.error: Exception | None = None
+        self.options: list[list[int] | None] = []
 
     def start(
         self,
@@ -19,10 +20,12 @@ class FakeManager:
         ui_commit_hash: str,
         build_system: str,
         api_keys: dict[str, str | None],
+        options: list[int] | None = None,
     ) -> BuildJob:
         if self.error is not None:
             raise self.error
         self.started.append((run_id, ui_commit_hash, build_system, api_keys))
+        self.options.append(options)
         job = BuildJob(
             run_id=run_id,
             ui_commit_hash=ui_commit_hash,
@@ -47,7 +50,7 @@ def manager(monkeypatch: pytest.MonkeyPatch) -> FakeManager:
     return fake
 
 
-def _body(**extra: str) -> StartBuildRequest:
+def _body(**extra: object) -> StartBuildRequest:
     return StartBuildRequest.model_validate(
         {"commitHash": "h1", "buildSystem": "pnpm", **extra}
     )
@@ -119,3 +122,19 @@ def test_builds_router_is_mounted() -> None:
 
     paths = {getattr(route, "path", "") for route in app.routes}
     assert "/api/runs/{run_id}/build" in paths
+
+
+@pytest.mark.asyncio
+async def test_build_route_passes_selected_options(
+    manager: FakeManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "STACK_GENERATOR_ENABLED", True)
+
+    await start_build(RUN_ID, _body())
+    await start_build(RUN_ID, _body(options=[0, 2]))
+
+    assert manager.options == [None, [0, 2]]
+    job = await get_build(RUN_ID)
+    option = job["options"][0]
+    for key in ("screenshot", "parity", "responsive", "render_ok"):
+        assert key in option and option[key] is None

@@ -205,3 +205,23 @@ def test_invalid_ui_commit_hash_rejected(tmp_path: Path) -> None:
             option_codes=["1"],
             message="v1",
         )
+
+
+def test_qa_dir_is_gitignored(tmp_path: Path) -> None:
+    ws = _create(tmp_path)
+    ignored = (ws.path / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "uploads/" in ignored and "qa/" in ignored
+
+    # Runs created before qa/ existed get it on their next version.
+    (ws.path / ".gitignore").write_text("uploads/\n", encoding="utf-8")
+    sha = ws.commit_version(
+        ui_commit_hash="h1",
+        parent_ui_commit_hash=None,
+        option_codes=["<a/>"],
+        message="v1",
+    )
+    assert "qa/" in (ws.path / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "qa/" in _git(ws, "show", f"{sha}:.gitignore").splitlines()
+    (ws.path / "qa" / "h1").mkdir(parents=True)
+    (ws.path / "qa" / "h1" / "op1-1280.png").write_bytes(b"png")
+    assert _git(ws, "status", "--porcelain") == ""

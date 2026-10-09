@@ -115,12 +115,15 @@ function PreviewPane({ settings, onOpenVersions }: Props) {
       const commit = useProjectStore.getState().commits[job.hash];
       if (!commit) return;
       try {
-        const { gitSha } = await saveVersion(job.runId, job.hash, {
+        const { gitSha, visualQa } = await saveVersion(job.runId, job.hash, {
           parentCommitHash: job.parentCommitHash,
           optionIndex: job.optionIndex,
           code: commit.variants[0]?.code ?? "",
         });
-        useProjectStore.getState().setCommitGitSha(job.hash, gitSha);
+        const project = useProjectStore.getState();
+        project.setCommitGitSha(job.hash, gitSha);
+        // Same store action as the websocket `visualQa` message.
+        if (visualQa) project.setCommitVisualQa(job.hash, visualQa);
       } catch (error) {
         console.error("Failed to save manual edit", error);
         const reason = error instanceof Error ? error.message : String(error);

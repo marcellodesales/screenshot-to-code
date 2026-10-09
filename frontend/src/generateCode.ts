@@ -5,6 +5,7 @@ import {
   USER_CLOSE_WEB_SOCKET_CODE,
 } from "./constants";
 import { FullGenerationSettings } from "./types";
+import { normalizeVisualQa, VisualQaData } from "./lib/visualQa";
 
 const ERROR_MESSAGE =
   "Error generating code. Check the Developer Console AND the backend logs for details. Feel free to open a Github issue.";
@@ -26,7 +27,8 @@ type WebSocketResponse = {
     | "toolStart"
     | "toolResult"
     | "runInfo"
-    | "versionCommitted";
+    | "versionCommitted"
+    | "visualQa";
   value?: string;
   data?: any;
   eventId?: string;
@@ -47,6 +49,7 @@ interface CodeGenerationCallbacks {
   onToolResult: (data: any, variantIndex: number, eventId?: string) => void;
   onRunInfo: (runId: string) => void;
   onVersionCommitted: (commitHash: string, gitSha: string) => void;
+  onVisualQa: (data: VisualQaData) => void;
   onCancel: (
     reason: "user_cancelled" | "request_failed" | "connection_error",
     errorMessage?: string
@@ -101,6 +104,9 @@ export function generateCode(
       if (typeof commitHash === "string" && typeof gitSha === "string") {
         callbacks.onVersionCommitted(commitHash, gitSha);
       }
+    } else if (response.type === "visualQa") {
+      const data = normalizeVisualQa(response.data);
+      if (data) callbacks.onVisualQa(data);
     } else if (response.type === "error") {
       console.error("Error generating code", response.value);
       toast.error(response.value || ERROR_MESSAGE);

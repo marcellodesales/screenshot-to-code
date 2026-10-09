@@ -31,6 +31,11 @@ MODEL_PRICING: Dict[str, ModelPricing] = {
     "gpt-5.6-terra": ModelPricing(
         input=2.50, output=15.00, cache_read=0.25
     ),
+    # Price not verified (added 2026-10-08): uses the gpt-5.6-sol rate so the
+    # GENERATION_MAX_COST_USD guard bounds it conservatively.
+    "gpt-5.6-luna": ModelPricing(
+        input=5.00, output=30.00, cache_read=0.50
+    ),
     # --- Anthropic ---
     # Verified against platform.claude.com/docs/en/about-claude/pricing on
     # 2026-07-24. cache_write is the 5-minute cache-write rate (1.25x input).
@@ -45,6 +50,21 @@ MODEL_PRICING: Dict[str, ModelPricing] = {
     ),
     "claude-fable-5": ModelPricing(
         input=10.00, output=50.00, cache_read=1.00, cache_write=12.50
+    ),
+    # From the Claude API model table (cached 2026-09-25); cache_write is
+    # 1.25x input. Fable 5.1 cache reads are $0.25/MTok.
+    "claude-fable-5-1": ModelPricing(
+        input=10.00, output=50.00, cache_read=0.25, cache_write=12.50
+    ),
+    "claude-opus-5-5": ModelPricing(
+        input=4.00, output=20.00, cache_read=0.20, cache_write=5.00
+    ),
+    "claude-sonnet-5-5": ModelPricing(
+        input=2.00, output=10.00, cache_read=0.20, cache_write=2.50
+    ),
+    # Price not verified (added 2026-10-08): uses the Haiku 4.5 rate.
+    "claude-haiku-5-5": ModelPricing(
+        input=1.00, output=5.00, cache_read=0.10, cache_write=1.25
     ),
     # --- Gemini ---
     # Verified against ai.google.dev/gemini-api/docs/pricing on 2026-07-24.
@@ -64,6 +84,10 @@ MODEL_PRICING: Dict[str, ModelPricing] = {
         input=1.50, output=9.00, cache_read=0.15
     ),
     "gemini-3.6-flash": ModelPricing(
+        input=1.50, output=7.50, cache_read=0.15
+    ),
+    # Price not verified (added 2026-10-08): uses the gemini-3.6-flash rate.
+    "gemini-3.8-flash": ModelPricing(
         input=1.50, output=7.50, cache_read=0.15
     ),
 }

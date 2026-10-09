@@ -1,3 +1,4 @@
+import asyncio
 import re
 import subprocess
 from pathlib import Path
@@ -7,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from routes import generate_code
 from routes.generate_code import (
     ExtractedParams,
     ParameterExtractionStage,
@@ -15,6 +17,30 @@ from routes.generate_code import (
 )
 
 SentMessage = tuple[str, str | None, int, dict[str, Any] | None]
+
+
+class FakeQa:
+    """Stands in for visual QA (real Chromium is covered by test_visual_qa)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.error: Exception | None = None
+        self.delay = 0.0
+
+    async def __call__(self, workspace: Any, ui_commit_hash: str) -> dict[str, Any]:
+        self.calls.append((workspace.run_id, ui_commit_hash))
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if self.error is not None:
+            raise self.error
+        return {"commitHash": ui_commit_hash, "options": [{"index": 0}]}
+
+
+@pytest.fixture(autouse=True)
+def fake_qa(monkeypatch: pytest.MonkeyPatch) -> FakeQa:
+    fake = FakeQa()
+    monkeypatch.setattr(generate_code, "run_version_qa", fake)
+    return fake
 
 
 def _context(
@@ -245,3 +271,56 @@ async def test_commit_failure_does_not_break_generation(
 
     cast(AsyncMock, cast(Any, context.ws_comm).throw_error).assert_not_awaited()
     assert _of_type(sent, "versionCommitted") == []
+
+
+@pytest.mark.asyncio
+async def test_sends_visual_qa_after_version_committed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_qa: FakeQa
+) -> None:
+    monkeypatch.setenv("RUNS_DIR", str(tmp_path))
+    sent: list[SentMessage] = []
+
+    await _run(_context(sent), ["<a/>", "<b/>"])
+
+    types = [message[0] for message in sent]
+    assert types.index("visualQa") == types.index("versionCommitted") + 1
+    [qa] = _of_type(sent, "visualQa")
+    assert qa == ("visualQa", None, 0, {"commitHash": "h1", "options": [{"index": 0}]})
+    assert fake_qa.calls == [(sent[0][1], "h1")]
+
+
+@pytest.mark.asyncio
+async def test_visual_qa_failure_or_timeout_sends_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_qa: FakeQa
+) -> None:
+    monkeypatch.setenv("RUNS_DIR", str(tmp_path))
+    sent: list[SentMessage] = []
+    fake_qa.error = RuntimeError("Chromium unavailable")
+    context = _context(sent)
+
+    assert await _run(context, ["<a/>"])
+    assert len(_of_type(sent, "versionCommitted")) == 1
+    assert _of_type(sent, "visualQa") == []
+
+    fake_qa.error = None
+    fake_qa.delay = 5
+    monkeypatch.setattr(generate_code, "VISUAL_QA_TIMEOUT_SECONDS", 0.05)
+    sent.clear()
+    assert await _run(_context(sent), ["<a/>"])
+    assert len(_of_type(sent, "versionCommitted")) == 1
+    assert _of_type(sent, "visualQa") == []
+    cast(AsyncMock, cast(Any, context.ws_comm).throw_error).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_visual_qa_without_a_committed_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_qa: FakeQa
+) -> None:
+    monkeypatch.setenv("RUNS_DIR", str(tmp_path))
+    sent: list[SentMessage] = []
+
+    await _run(_context(sent, commit_hash=None), ["<a/>"])
+    await _run(_context(sent), ["", ""])
+
+    assert fake_qa.calls == []
+    assert _of_type(sent, "visualQa") == []

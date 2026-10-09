@@ -328,3 +328,86 @@ async def test_default_migration_llm_prefers_anthropic(
     await llm("S", "U")
     assert seen[2]["model"] in GEMINI_MODELS
     assert seen[2]["tools_enabled"] is False
+
+
+def test_migration_models_use_the_current_generation_per_provider() -> None:
+    from llm import Llm
+    from stack_generator import migrate
+
+    assert migrate.ANTHROPIC_MIGRATION_MODEL == Llm.CLAUDE_OPUS_5_5_MEDIUM
+    assert migrate.OPENAI_MIGRATION_MODEL == Llm.GPT_5_6_SOL_HIGH
+    assert migrate.GEMINI_MIGRATION_MODEL == Llm.GEMINI_3_8_FLASH_HIGH
+
+
+def test_migration_prompt_requires_deterministic_prerender_safe_render() -> None:
+    from stack_generator.prompts import MIGRATION_SYSTEM_PROMPT
+
+    prompt = MIGRATION_SYSTEM_PROMPT
+    assert "deterministic" in prompt
+    assert "prerender" in prompt
+    for unstable in ("new Date()", "Date.now()", "Math.random()", "window", "document"):
+        assert unstable in prompt
+    # Where such values belong instead.
+    assert "useEffect" in prompt
+    assert "hard-code" in prompt.lower()
+
+
+@pytest.mark.asyncio
+async def test_repair_migration_sends_log_and_files_and_validates(tmp_path: Path) -> None:
+    from stack_generator.migrate import repair_migration
+
+    calls: list[tuple[str, str]] = []
+    fixed = "export default function Footer() { return <p>2026</p>; }"
+
+    async def llm(system: str, user: str) -> str:
+        calls.append((system, user))
+        return json.dumps({"files": {"src/components/Footer.tsx": fixed}})
+
+    broken = {"src/components/Footer.tsx": "<p>{new Date().getFullYear()}</p>"}
+    files = await repair_migration(
+        files=broken,
+        build_log="Error: unstable value `new Date()` at Footer.tsx:88:22",
+        template=_template(has_scaffold=True, tmp_path=tmp_path),
+        llm=llm,
+    )
+
+    assert files == {"src/components/Footer.tsx": fixed}
+    [(system, user)] = calls
+    assert "JSON" in system
+    assert "production build failed" in user
+    assert "Footer.tsx:88:22" in user
+    assert "new Date().getFullYear()" in user
+    for target in NEXTJS_TARGETS:
+        assert target in user
+
+
+@pytest.mark.asyncio
+async def test_repair_migration_rejects_disallowed_paths(tmp_path: Path) -> None:
+    from stack_generator.migrate import repair_migration
+
+    async def llm(system: str, user: str) -> str:
+        return json.dumps({"files": {"package.json": "{}"}})
+
+    with pytest.raises(MigrationError):
+        await repair_migration(
+            files={"src/app/page.tsx": "x"},
+            build_log="boom",
+            template=_template(has_scaffold=True, tmp_path=tmp_path),
+            llm=llm,
+        )
+
+
+@pytest.mark.asyncio
+async def test_repair_migration_refuses_static_templates(tmp_path: Path) -> None:
+    from stack_generator.migrate import repair_migration
+
+    async def llm(system: str, user: str) -> str:
+        raise AssertionError("static templates are never repaired")
+
+    with pytest.raises(MigrationError):
+        await repair_migration(
+            files={"public/index.html": "x"},
+            build_log="boom",
+            template=_template(has_scaffold=False, tmp_path=tmp_path),
+            llm=llm,
+        )

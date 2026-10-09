@@ -17,7 +17,11 @@ from agent.providers.factory import create_provider_session
 from config import OPENAI_BASE_URL
 from llm import Llm
 from stack_generator.catalog import StackTemplate
-from stack_generator.prompts import MIGRATION_SYSTEM_PROMPT, migration_user_prompt
+from stack_generator.prompts import (
+    MIGRATION_SYSTEM_PROMPT,
+    migration_user_prompt,
+    repair_user_prompt,
+)
 
 MigrationLlm = Callable[[str, str], Awaitable[str]]
 
@@ -26,9 +30,9 @@ MAX_FILE_BYTES = 200 * 1024
 MAX_FILES = 40
 
 # Preferred provider order for the migration call: Anthropic, OpenAI, Gemini.
-ANTHROPIC_MIGRATION_MODEL = Llm.CLAUDE_SONNET_4_6
-OPENAI_MIGRATION_MODEL = Llm.GPT_5_5_LOW
-GEMINI_MIGRATION_MODEL = Llm.GEMINI_3_5_FLASH_MEDIUM
+ANTHROPIC_MIGRATION_MODEL = Llm.CLAUDE_OPUS_5_5_MEDIUM
+OPENAI_MIGRATION_MODEL = Llm.GPT_5_6_SOL_HIGH
+GEMINI_MIGRATION_MODEL = Llm.GEMINI_3_8_FLASH_HIGH
 
 SYSTEM_SANS = (
     'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, '
@@ -132,6 +136,27 @@ async def migrate_mock(
     files = validate_file_map(parse_file_map(raw), template.migration_targets)
     files[template.mock_path] = mock_html
     return files
+
+
+async def repair_migration(
+    *, files: dict[str, str], build_log: str, template: StackTemplate, llm: MigrationLlm
+) -> dict[str, str]:
+    """Corrected files after a failed production build (same contract as migrate_mock).
+
+    Returns only the files the model sent back, validated against the
+    template's ``migration_targets``; the caller writes them over the app.
+    """
+    if not template.has_scaffold:
+        raise MigrationError("Static templates are not repaired")
+    raw = await llm(
+        MIGRATION_SYSTEM_PROMPT,
+        repair_user_prompt(
+            files=files,
+            build_log=build_log,
+            migration_targets=template.migration_targets,
+        ),
+    )
+    return validate_file_map(parse_file_map(raw), template.migration_targets)
 
 
 def _layout_tsx(title: str) -> str:

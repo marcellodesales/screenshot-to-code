@@ -29,7 +29,8 @@ we own, and the generator builds the app in three steps:
 2. **Overlay**: copy these files over the scaffold output:
    `Dockerfile`, `.dockerignore`, `docker-compose.yaml`, `.env.example`,
    `next.config.ts` (scaffold defaults + `output: "standalone"` +
-   `poweredByHeader: false`). Store the mock at `design/mock.html`.
+   `poweredByHeader: false`, minus `cacheComponents` -- see
+   "Dockerfile/config decisions"). Store the mock at `design/mock.html`.
 
 3. **Migrate** the mock into `src/` (below), then produce the lockfile:
    `pnpm install --lockfile-only --store-dir /tmp/pnpm-store`.
@@ -107,6 +108,22 @@ not part of the overlay.
 
 Image size (fixture app): **~201 MB**. The `node:22-alpine` base is 164 MB,
 and the app layers are ~38 MB.
+
+## Dockerfile/config decisions
+
+- **`output: "standalone"`** feeds the 4-stage Dockerfile's runner (above).
+- **`poweredByHeader: false`**: no `X-Powered-By` behind the gateway.
+- **`cacheComponents: false`** (and the scaffold's `partialPrefetching`, which
+  builds on it, dropped). create-next-app 16.4 turns Cache Components on;
+  with it `next build` aborts prerendering when a Client Component reads a
+  non-deterministic value during render (`new Date()`, `Date.now()`,
+  `Math.random()`), e.g. a footer's `{new Date().getFullYear()}`:
+  ``Error: Route "/": Next.js encountered the unstable value `new Date()` in
+  a Client Component.`` Generated mocks do this often, and the generated apps
+  are static pages, so the overlay uses classic static prerendering. The
+  migration prompt additionally asks for deterministic, prerender-safe
+  render code, and the builder runs `docker compose build` (with LLM repair
+  attempts) before committing an app.
 
 ## Build and run
 

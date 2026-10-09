@@ -18,6 +18,7 @@ import AgentActivity from "../agent/AgentActivity";
 import { formatCompletedGenerationDuration } from "../agent/generation-time";
 import WorkingPulse from "../core/WorkingPulse";
 import ImageLightbox from "../ImageLightbox";
+import VisualQaFailures from "./VisualQaFailures";
 import { Commit } from "../commits/types";
 import { CodeGenerationModel } from "../../lib/models";
 import DesignSystemSelector, {
@@ -416,6 +417,8 @@ function Sidebar({
         )}
 
         {!isViewingOlderVersion && <AgentActivity />}
+
+        <VisualQaFailures visualQa={currentCommit?.visualQa} />
 
         {/* Retry any AI-generated version. A completed older version can be
             retried once no other request is running; the regenerated edit

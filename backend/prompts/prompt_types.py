@@ -13,6 +13,9 @@ class UserTurnInput(_UserTurnInputRequired, total=False):
     # Full instruction for the model when it differs from the display text
     # (e.g. includes the selected-element reference, built by the frontend).
     full_text: str
+    # Frames the browser sampled from prompt.videos (data URLs, in order) so
+    # models without video input can still see the recording.
+    video_frames: List[str]
 
 
 class PromptHistoryMessage(TypedDict):
