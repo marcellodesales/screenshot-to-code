@@ -361,9 +361,11 @@ class AnthropicProviderSession(ProviderSession):
             "max_tokens": 50000,
             "system": self._system_prompt,
             "messages": self._messages,
-            "tools": self._tools,
             "cache_control": {"type": "ephemeral"},
         }
+        # An empty tools list is omitted entirely: a tools-free completion.
+        if self._tools:
+            stream_kwargs["tools"] = self._tools
 
         if self._model.value in ADAPTIVE_THINKING_MODELS:
             stream_kwargs["thinking"] = {

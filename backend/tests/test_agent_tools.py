@@ -208,6 +208,47 @@ def test_provider_session_includes_screenshot_preview_when_chromium_available(
     assert "screenshot_preview" in tool_names
 
 
+@pytest.mark.parametrize(
+    "model", [Llm.GPT_5_5_HIGH, Llm.CLAUDE_SONNET_4_6, Llm.GEMINI_3_5_FLASH_MEDIUM]
+)
+def test_provider_session_offers_no_tools_when_disabled(model: Llm) -> None:
+    session = create_provider_session(
+        model=model,
+        prompt_messages=[
+            {"role": "system", "content": "Return JSON."},
+            {"role": "user", "content": "Migrate this."},
+        ],
+        should_generate_images=True,
+        openai_api_key="openai-key",
+        openai_base_url=None,
+        anthropic_api_key="anthropic-key",
+        gemini_api_key="gemini-key",
+        replicate_api_key="replicate-key",
+        tools_enabled=False,
+    )
+
+    assert getattr(session, "_tools") == []
+
+
+def test_provider_session_offers_tools_by_default() -> None:
+    session = create_provider_session(
+        model=Llm.CLAUDE_SONNET_4_6,
+        prompt_messages=[
+            {"role": "system", "content": "Build."},
+            {"role": "user", "content": "Build a page."},
+        ],
+        should_generate_images=True,
+        openai_api_key=None,
+        openai_base_url=None,
+        anthropic_api_key="anthropic-key",
+        gemini_api_key=None,
+        replicate_api_key=None,
+    )
+
+    tools = cast(list[dict[str, Any]], getattr(session, "_tools"))
+    assert "create_file" in [tool["name"] for tool in tools]
+
+
 def test_extract_assets_tool_input_summary_uses_asset_descriptions() -> None:
     summary = summarize_tool_input(
         ToolCall(

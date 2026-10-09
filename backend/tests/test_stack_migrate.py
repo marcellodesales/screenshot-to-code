@@ -308,6 +308,7 @@ async def test_default_migration_llm_prefers_anthropic(
     )
     assert await llm("SYSTEM", "USER") == '{"files": {}}'
     assert seen[0]["model"] in ANTHROPIC_MODELS
+    assert seen[0]["tools_enabled"] is False
     messages = seen[0]["prompt_messages"]
     assert isinstance(messages, list)
     assert messages[0] == {"role": "system", "content": "SYSTEM"}
@@ -319,9 +320,11 @@ async def test_default_migration_llm_prefers_anthropic(
     )
     await llm("S", "U")
     assert seen[1]["model"] in OPENAI_MODELS
+    assert seen[1]["tools_enabled"] is False
 
     llm = default_migration_llm(
         openai_api_key=None, anthropic_api_key=None, gemini_api_key="g"
     )
     await llm("S", "U")
     assert seen[2]["model"] in GEMINI_MODELS
+    assert seen[2]["tools_enabled"] is False

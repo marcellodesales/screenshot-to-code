@@ -446,11 +446,13 @@ class OpenAIProviderSession(ProviderSession):
         params: Dict[str, Any] = {
             "model": model_name,
             "input": self._input_items,
-            "tools": self._tools,
-            "tool_choice": "auto",
             "stream": True,
             "max_output_tokens": 50000,
         }
+        # An empty tools list is omitted entirely: a tools-free completion.
+        if self._tools:
+            params["tools"] = self._tools
+            params["tool_choice"] = "auto"
         if model_name == "gpt-5.4-2026-03-05":
             params["prompt_cache_retention"] = "24h"
         reasoning_effort = get_openai_reasoning_effort(self._model)

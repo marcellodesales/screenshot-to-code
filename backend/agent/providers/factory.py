@@ -10,6 +10,7 @@ from agent.providers.base import ProviderSession
 from agent.providers.gemini import GeminiProviderSession, serialize_gemini_tools
 from agent.providers.openai import OpenAIProviderSession, serialize_openai_tools
 from agent.tools import canonical_tool_definitions
+from agent.tools.types import CanonicalToolDefinition
 from config import REPLICATE_API_KEY
 from fs_logging.agent_runs import AgentRunRecorder
 from llm import ANTHROPIC_MODELS, GEMINI_MODELS, OPENAI_MODELS, Llm
@@ -27,16 +28,20 @@ def create_provider_session(
     replicate_api_key: Optional[str],
     should_extract_assets: bool = True,
     recorder: Optional[AgentRunRecorder] = None,
+    tools_enabled: bool = True,
 ) -> ProviderSession:
-    canonical_tools = canonical_tool_definitions(
-        image_generation_enabled=should_generate_images,
-        # The edit_images tool calls Replicate, so don't offer it without a key.
-        image_editing_enabled=bool(replicate_api_key or REPLICATE_API_KEY),
-        # The extract_assets tool calls Gemini, so don't offer it without a key.
-        asset_extraction_enabled=should_extract_assets and bool(gemini_api_key),
-        # screenshot_preview needs headless Chromium; skip it if it can't launch.
-        screenshot_enabled=is_screenshot_preview_available(),
-    )
+    """``tools_enabled=False`` offers no tools, for plain one-shot completions."""
+    canonical_tools: list[CanonicalToolDefinition] = []
+    if tools_enabled:
+        canonical_tools = canonical_tool_definitions(
+            image_generation_enabled=should_generate_images,
+            # The edit_images tool calls Replicate, so don't offer it without a key.
+            image_editing_enabled=bool(replicate_api_key or REPLICATE_API_KEY),
+            # The extract_assets tool calls Gemini, so don't offer it without a key.
+            asset_extraction_enabled=should_extract_assets and bool(gemini_api_key),
+            # screenshot_preview needs headless Chromium; skip it if it can't launch.
+            screenshot_enabled=is_screenshot_preview_available(),
+        )
 
     if model in OPENAI_MODELS:
         if not openai_api_key:

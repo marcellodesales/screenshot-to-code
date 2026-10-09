@@ -222,6 +222,8 @@ def default_migration_llm(
             gemini_api_key=gemini_api_key,
             replicate_api_key=None,
             should_extract_assets=False,
+            # The answer must be the JSON file map, never a tool call.
+            tools_enabled=False,
         )
         try:
             turn = await session.stream_turn(_ignore_event)

@@ -332,3 +332,37 @@ async def test_openai_provider_session_keeps_high_image_detail_for_non_gpt_5_5()
 
     assert image_part["type"] == "input_image"
     assert image_part["detail"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_session_omits_tools_when_list_is_empty() -> None:
+    client = _FakeOpenAIClient()
+    session = OpenAIProviderSession(
+        client=client,  # type: ignore[arg-type]
+        model=Llm.GPT_5_5_LOW,
+        prompt_messages=[{"role": "user", "content": "Return JSON."}],
+        tools=[],
+    )
+
+    await session.stream_turn(_noop_event_sink)
+
+    first_call = client.responses.calls[0]
+    assert "tools" not in first_call
+    assert "tool_choice" not in first_call
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_session_sends_tools_when_present() -> None:
+    client = _FakeOpenAIClient()
+    session = OpenAIProviderSession(
+        client=client,  # type: ignore[arg-type]
+        model=Llm.GPT_5_5_LOW,
+        prompt_messages=[{"role": "user", "content": "Build a page."}],
+        tools=_test_tools(),
+    )
+
+    await session.stream_turn(_noop_event_sink)
+
+    first_call = client.responses.calls[0]
+    assert first_call["tools"] == _test_tools()
+    assert first_call["tool_choice"] == "auto"
