@@ -27,6 +27,8 @@ import { normalizeBabelCdn } from "../../lib/babelCdn";
 import ImageScanningPreview from "./ImageScanningPreview";
 import { useDebouncedCallback } from "../../hooks/useDebouncedCallback";
 import { saveVersion } from "../../lib/runs";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import BuildAppPanel from "../build/BuildAppPanel";
 
 // Manual edits are saved to the backend run after this much idle time.
 const MANUAL_EDIT_SAVE_DELAY_MS = 1500;
@@ -60,7 +62,7 @@ interface Props {
 
 function PreviewPane({ settings, onOpenVersions }: Props) {
   const { appState } = useAppStore();
-  const { inputMode, head, commits, setHead } = useProjectStore();
+  const { inputMode, head, commits, setHead, runId } = useProjectStore();
   const [activeTab, setActiveTab] = useState("desktop");
   const [desktopScale, setDesktopScale] = useState(1);
   const [desktopViewMode, setDesktopViewMode] = useState<"fit" | "actual">("fit");
@@ -102,6 +104,9 @@ function PreviewPane({ settings, onOpenVersions }: Props) {
 
   const canSelectAndEdit =
     appState === AppState.CODE_READY || !!isSelectedVariantComplete;
+
+  const headGitSha = currentCommit ? currentCommit.gitSha : undefined;
+  const canBuildApp = canSelectAndEdit && !!runId && !!headGitSha;
 
   // Saves run one after another so a version's git commits land in order.
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
@@ -280,6 +285,35 @@ function PreviewPane({ settings, onOpenVersions }: Props) {
               (activeTab === "desktop" || activeTab === "mobile") && (
                 <SelectAndEditToolbarButton />
               )}
+            {canSelectAndEdit && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    disabled={!canBuildApp}
+                    data-testid="build-app"
+                    title={
+                      canBuildApp
+                        ? "Build this version into a running app"
+                        : "Available once this version is saved to the run (git SHA shown in Versions)"
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:border-violet-300 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-gray-200 disabled:hover:text-gray-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-violet-500 dark:hover:text-violet-300"
+                  >
+                    🚀 Build app
+                  </button>
+                </PopoverTrigger>
+                {canBuildApp && head && runId && (
+                  <PopoverContent align="end" className="w-80">
+                    <BuildAppPanel
+                      runId={runId}
+                      commitHash={head}
+                      versionNumber={currentVersionIndex + 1}
+                      settings={settings}
+                    />
+                  </PopoverContent>
+                )}
+              </Popover>
+            )}
             {(appState === AppState.CODE_READY || isSelectedVariantComplete) && (
               <Button
                 onClick={() => downloadCode(previewCode)}

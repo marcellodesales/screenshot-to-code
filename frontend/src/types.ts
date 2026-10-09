@@ -12,6 +12,8 @@ export enum AppTheme {
   DARK = "dark",
 }
 
+export type BuildSystem = "pnpm" | "npm" | "bun";
+
 export interface Settings {
   openAiApiKey: string | null;
   openAiBaseURL: string | null;
@@ -26,6 +28,8 @@ export interface Settings {
   isTermOfServiceAccepted: boolean;
   anthropicApiKey: string | null;
   geminiApiKey: string | null;
+  // Package manager used by "🚀 Build app" (stack generator)
+  buildSystem: BuildSystem;
 }
 
 export interface DesignSystem {

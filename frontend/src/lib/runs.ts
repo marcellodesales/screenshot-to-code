@@ -1,4 +1,5 @@
 import { HTTP_BACKEND_URL } from "../config";
+import { BuildSystem } from "../types";
 
 // Client for the backend run workspace routes (spec §2.2, §7).
 
@@ -18,10 +19,12 @@ export class RunsApiError extends Error {
   }
 }
 
+function apiUrl(path: string) {
+  return `${HTTP_BACKEND_URL.replace(/\/$/, "")}${path}`;
+}
+
 function runUrl(runId: string, suffix: string) {
-  return `${HTTP_BACKEND_URL.replace(/\/$/, "")}/api/runs/${encodeURIComponent(
-    runId
-  )}${suffix}`;
+  return apiUrl(`/api/runs/${encodeURIComponent(runId)}${suffix}`);
 }
 
 // FastAPI errors are `{"detail": "..."}` (or a validation list); fall back to
@@ -77,4 +80,174 @@ export function saveVersion(
     runUrl(runId, `/versions/${encodeURIComponent(commitHash)}`),
     jsonInit("PUT", body)
   );
+}
+
+// ---- Build app (spec §7) ----
+
+export type OptionState =
+  | "queued"
+  | "scaffolding"
+  | "migrating"
+  | "committing"
+  | "starting"
+  | "running"
+  | "failed";
+
+export interface OptionStatus {
+  index: number;
+  state: OptionState;
+  stepMessage: string;
+  url: string | null;
+  error: string | null;
+}
+
+export interface BuildJob {
+  runId: string;
+  uiCommitHash: string;
+  buildSystem: string;
+  templateId: string;
+  options: OptionStatus[];
+}
+
+export interface StartBuildBody {
+  commitHash: string;
+  buildSystem: BuildSystem;
+  openAiApiKey?: string | null;
+  anthropicApiKey?: string | null;
+  geminiApiKey?: string | null;
+}
+
+type JsonObject = Record<string, unknown>;
+
+function asObject(value: unknown): JsonObject {
+  return value && typeof value === "object" ? (value as JsonObject) : {};
+}
+
+// The backend serialises dataclasses (snake_case); accept camelCase as well.
+function pick(obj: JsonObject, snake: string, camel: string): unknown {
+  return obj[snake] ?? obj[camel];
+}
+
+function str(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function strOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+export function normalizeBuildJob(raw: unknown): BuildJob {
+  const job = asObject(raw);
+  const options = Array.isArray(job.options) ? job.options : [];
+  return {
+    runId: str(pick(job, "run_id", "runId")),
+    uiCommitHash: str(pick(job, "ui_commit_hash", "uiCommitHash")),
+    buildSystem: str(pick(job, "build_system", "buildSystem")),
+    templateId: str(pick(job, "template_id", "templateId")),
+    options: options.map((rawOption, position) => {
+      const option = asObject(rawOption);
+      return {
+        index: typeof option.index === "number" ? option.index : position,
+        state: str(option.state, "queued") as OptionState,
+        stepMessage: str(pick(option, "step_message", "stepMessage")),
+        url: strOrNull(option.url),
+        error: strOrNull(option.error),
+      };
+    }),
+  };
+}
+
+export function isBuildFinished(job: BuildJob): boolean {
+  return (
+    job.options.length > 0 &&
+    job.options.every(
+      (option) => option.state === "running" || option.state === "failed"
+    )
+  );
+}
+
+export async function startBuild(
+  runId: string,
+  body: StartBuildBody,
+  fetcher: typeof fetch = fetch
+): Promise<BuildJob> {
+  const raw = await requestJson<unknown>(
+    fetcher,
+    runUrl(runId, "/build"),
+    jsonInit("POST", body)
+  );
+  return normalizeBuildJob(raw);
+}
+
+// null when the run has never been built (404).
+export async function getBuild(
+  runId: string,
+  fetcher: typeof fetch = fetch
+): Promise<BuildJob | null> {
+  try {
+    const raw = await requestJson<unknown>(fetcher, runUrl(runId, "/build"), {
+      method: "GET",
+    });
+    return normalizeBuildJob(raw);
+  } catch (error) {
+    if (error instanceof RunsApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+// ---- Stack catalog ----
+
+export interface StackCatalogEntry {
+  id: string;
+  source_stacks: string[];
+  build_system: string;
+  phase: number;
+  status: string;
+}
+
+export function listStacks(
+  fetcher: typeof fetch = fetch
+): Promise<StackCatalogEntry[]> {
+  return requestJson<StackCatalogEntry[]>(fetcher, apiUrl("/api/stacks"), {
+    method: "GET",
+  });
+}
+
+// Build systems with an `available` catalog entry for the source stack.
+export function enabledBuildSystems(
+  stacks: StackCatalogEntry[],
+  sourceStack: string
+): Set<string> {
+  const enabled = new Set<string>();
+  for (const entry of stacks) {
+    if (
+      entry.status === "available" &&
+      Array.isArray(entry.source_stacks) &&
+      entry.source_stacks.includes(sourceStack)
+    ) {
+      enabled.add(entry.build_system);
+    }
+  }
+  return enabled;
+}
+
+// Request body for "🚀 Build app": keys left empty in Settings are omitted so
+// the backend falls back to its own environment.
+export function buildStartBody(
+  commitHash: string,
+  settings: {
+    buildSystem: BuildSystem;
+    openAiApiKey: string | null;
+    anthropicApiKey: string | null;
+    geminiApiKey: string | null;
+  }
+): StartBuildBody {
+  const body: StartBuildBody = {
+    commitHash,
+    buildSystem: settings.buildSystem,
+  };
+  if (settings.openAiApiKey) body.openAiApiKey = settings.openAiApiKey;
+  if (settings.anthropicApiKey) body.anthropicApiKey = settings.anthropicApiKey;
+  if (settings.geminiApiKey) body.geminiApiKey = settings.geminiApiKey;
+  return body;
 }

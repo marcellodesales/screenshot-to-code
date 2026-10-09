@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { generateCode } from "./generateCode";
 import { AppState, AppTheme, EditorTheme, Settings } from "./types";
 import { NEW_DESIGN_SYSTEM_CONTENT } from "./lib/design-systems";
+import { DEFAULT_BUILD_SYSTEM, withDefaultBuildSystem } from "./lib/settings";
 import { IS_RUNNING_ON_CLOUD } from "./config";
 import { OnboardingNote } from "./components/messages/OnboardingNote";
 import { usePersistedState } from "./hooks/usePersistedState";
@@ -101,6 +102,7 @@ function App() {
       generatedCodeConfig: Stack.HTML_TAILWIND,
       codeGenerationModel: CodeGenerationModel.GEMINI_3_FLASH_PREVIEW_MINIMAL,
       selectedDesignSystemId: null,
+      buildSystem: DEFAULT_BUILD_SYSTEM,
       // Only relevant for hosted version
       isTermOfServiceAccepted: false,
     },
@@ -180,6 +182,12 @@ function App() {
       }));
     }
   }, [settings.generatedCodeConfig, setSettings]);
+
+  useEffect(() => {
+    if (withDefaultBuildSystem(settings).buildSystem !== settings.buildSystem) {
+      setSettings((prev) => withDefaultBuildSystem(prev));
+    }
+  }, [settings, setSettings]);
 
   useEffect(() => {
     if (!("selectedDesignSystemId" in settings)) {
