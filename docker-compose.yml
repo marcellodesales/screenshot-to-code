@@ -15,7 +15,8 @@ services:
       - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT:-3312}:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./internal/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      # Mount the dir, not the file: editors swap the inode and a file mount goes stale.
+      - ./internal/traefik:/etc/traefik:ro
     networks:
       - traefik_webgateway
     healthcheck:
