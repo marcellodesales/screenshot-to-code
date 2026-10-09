@@ -24,7 +24,9 @@ type WebSocketResponse = {
     | "thinking"
     | "assistant"
     | "toolStart"
-    | "toolResult";
+    | "toolResult"
+    | "runInfo"
+    | "versionCommitted";
   value?: string;
   data?: any;
   eventId?: string;
@@ -43,6 +45,8 @@ interface CodeGenerationCallbacks {
   onAssistant: (content: string, variantIndex: number, eventId?: string) => void;
   onToolStart: (data: any, variantIndex: number, eventId?: string) => void;
   onToolResult: (data: any, variantIndex: number, eventId?: string) => void;
+  onRunInfo: (runId: string) => void;
+  onVersionCommitted: (commitHash: string, gitSha: string) => void;
   onCancel: (
     reason: "user_cancelled" | "request_failed" | "connection_error",
     errorMessage?: string
@@ -89,6 +93,14 @@ export function generateCode(
       callbacks.onToolStart(response.data, response.variantIndex, response.eventId);
     } else if (response.type === "toolResult") {
       callbacks.onToolResult(response.data, response.variantIndex, response.eventId);
+    } else if (response.type === "runInfo") {
+      if (response.value) callbacks.onRunInfo(response.value);
+    } else if (response.type === "versionCommitted") {
+      const commitHash = response.data?.commitHash;
+      const gitSha = response.data?.gitSha;
+      if (typeof commitHash === "string" && typeof gitSha === "string") {
+        callbacks.onVersionCommitted(commitHash, gitSha);
+      }
     } else if (response.type === "error") {
       console.error("Error generating code", response.value);
       toast.error(response.value || ERROR_MESSAGE);

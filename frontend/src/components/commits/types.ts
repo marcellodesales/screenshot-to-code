@@ -47,6 +47,9 @@ export type BaseCommit = {
   isCommitted: boolean;
   variants: Variant[];
   selectedVariantIndex: number;
+  // Git SHA of this version in the backend run workspace (set once the
+  // backend sends `versionCommitted` or acknowledges a manual-edit save).
+  gitSha?: string;
 };
 
 export type CommitType = "ai_create" | "ai_edit" | "code_create";

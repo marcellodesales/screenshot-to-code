@@ -85,6 +85,10 @@ export interface CodeGenerationParams {
   };
   optionCodes?: string[];
   isAssetExtractionEnabled?: boolean;
+  // Links the request to the backend run workspace (spec §2.2)
+  runId?: string | null;
+  commitHash?: string;
+  parentCommitHash?: string | null;
 }
 
 export type FullGenerationSettings = CodeGenerationParams &

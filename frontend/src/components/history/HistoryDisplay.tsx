@@ -1,4 +1,4 @@
-import { renderHistory, RenderedHistoryItem } from "./utils";
+import { renderHistory, RenderedHistoryItem, shortSha } from "./utils";
 import { useProjectStore } from "../../store/project-store";
 import { BsChevronDown, BsChevronRight } from "react-icons/bs";
 import { useState, useRef, useEffect, useCallback } from "react";
@@ -190,6 +190,15 @@ export default function HistoryDisplay() {
                   {item.parentVersion !== null && (
                     <span className="text-[10px] text-gray-400 dark:text-gray-500">
                       from v{item.parentVersion}
+                    </span>
+                  )}
+                  {item.gitSha && (
+                    <span
+                      className="ml-auto font-mono text-xs text-gray-400 dark:text-gray-500"
+                      title={item.gitSha}
+                      data-testid="version-git-sha"
+                    >
+                      {shortSha(item.gitSha)}
                     </span>
                   )}
                 </div>

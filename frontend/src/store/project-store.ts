@@ -22,6 +22,11 @@ interface ProjectStore {
   upsertPromptAssets: (assets: PromptAsset[]) => void;
   resetPromptAssets: () => void;
 
+  // Backend run workspace this project's versions are committed into
+  runId: string | null;
+  setRunId: (runId: string | null) => void;
+  setCommitGitSha: (hash: CommitHash, gitSha: string) => void;
+
   // Outputs
   commits: Record<string, Commit>;
   head: CommitHash | null;
@@ -103,6 +108,18 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     }),
   resetPromptAssets: () => set({ assetsById: {} }),
 
+  runId: null,
+  setRunId: (runId) => set({ runId }),
+  // Allowed on committed commits: the SHA arrives after the version is done.
+  setCommitGitSha: (hash, gitSha) =>
+    set((state) => {
+      const commit = state.commits[hash];
+      if (!commit) return state;
+      return {
+        commits: { ...state.commits, [hash]: { ...commit, gitSha } },
+      };
+    }),
+
   // Outputs
   commits: {},
   head: null,
@@ -153,7 +170,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       return { commits: newCommits, latestCommitHash: newLatestCommitHash };
     });
   },
-  resetCommits: () => set({ commits: {}, latestCommitHash: null }),
+  // A new project starts a new backend run, so the run id goes with the commits.
+  resetCommits: () => set({ commits: {}, latestCommitHash: null, runId: null }),
 
   appendCommitCode: (hash: CommitHash, numVariant: number, code: string) =>
     set((state) => {

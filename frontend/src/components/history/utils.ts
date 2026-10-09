@@ -69,6 +69,11 @@ export function getSelectedElementTag(commit: Commit): string | null {
   return extractTagName(html);
 }
 
+// Abbreviated git SHA shown next to a version (full SHA goes in the tooltip).
+export function shortSha(sha: string | undefined | null): string | null {
+  return sha ? sha.slice(0, 7) : null;
+}
+
 export type RenderedHistoryItem = Omit<Commit, "type"> & {
   type: string;
   summary: string;

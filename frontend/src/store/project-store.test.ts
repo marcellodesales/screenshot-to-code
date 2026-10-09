@@ -85,3 +85,53 @@ describe("variant completion timestamps", () => {
     }
   );
 });
+
+describe("run linkage", () => {
+  beforeEach(() => {
+    useProjectStore.setState({
+      commits: {},
+      head: null,
+      latestCommitHash: null,
+      runId: null,
+    });
+  });
+
+  it("stores the run id sent by the backend", () => {
+    useProjectStore.getState().setRunId("run_20261008_101500_ab12cd34");
+
+    expect(useProjectStore.getState().runId).toBe(
+      "run_20261008_101500_ab12cd34"
+    );
+  });
+
+  it("setCommitGitSha sets gitSha on a committed commit", () => {
+    const store = useProjectStore.getState();
+    store.addCommit({ ...createGeneratingCommit(), hash: "v1" });
+    // Adding a second commit marks v1 as committed.
+    store.addCommit({ ...createGeneratingCommit(), hash: "v2" });
+    expect(useProjectStore.getState().commits["v1"].isCommitted).toBe(true);
+
+    store.setCommitGitSha("v1", "a".repeat(40));
+
+    expect(useProjectStore.getState().commits["v1"].gitSha).toBe(
+      "a".repeat(40)
+    );
+  });
+
+  it("setCommitGitSha ignores unknown commits", () => {
+    useProjectStore.getState().setCommitGitSha("missing", "b".repeat(40));
+
+    expect(useProjectStore.getState().commits["missing"]).toBeUndefined();
+  });
+
+  it("reset (resetCommits) clears runId", () => {
+    const store = useProjectStore.getState();
+    store.setRunId("run_20261008_101500_ab12cd34");
+    store.addCommit(createGeneratingCommit());
+
+    store.resetCommits();
+
+    expect(useProjectStore.getState().runId).toBeNull();
+    expect(useProjectStore.getState().commits).toEqual({});
+  });
+});
