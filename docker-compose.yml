@@ -2,6 +2,7 @@ version: '3.9'
 
 services:
   backend:
+    image: ohanalabs-ai/screenshot-to-code-backend
     build: 
       context: ./backend
       dockerfile: Dockerfile
@@ -20,8 +21,16 @@ services:
     command: poetry run uvicorn main:app --host 0.0.0.0 --port ${BACKEND_PORT:-7001}
   
   frontend:
+    image: ohanalabs-ai/screenshot-to-code-frontend
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    # The Vite dev server proxies /api, /generate-code and /local-assets to the
+    # backend. Inside this container 127.0.0.1 is the frontend itself, so point
+    # the proxy at the backend service on the compose network instead.
+    environment:
+      - PROXY_CODEGEN_BACKEND=http://backend:${BACKEND_PORT:-7001}
+    depends_on:
+      - backend
     ports:
       - "5173:5173"
