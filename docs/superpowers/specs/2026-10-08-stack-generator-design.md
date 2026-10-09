@@ -40,6 +40,47 @@ data/runs/<run-id>/
 Option directories are `op<N>` (1-based, matching the UI's "Option N").
 Stack choice lives in `stack.yaml`, never in directory names.
 
+### 2.1 Git history of a run (versions)
+
+`data/runs/<run-id>/` is **one git repo per run**. `uploads/` is gitignored
+(videos can be large); everything else is tracked.
+
+- **Commit 1 — the mock only.** When a create generation finishes, commit
+  `stack.yaml` + every `op<N>/design/mock.html` as
+  `:art: Version 1 — mock (<source-stack>)`.
+- **Every later UI version is a git commit on the same files.** AI edits
+  ("Edit" versions) and manual code edits overwrite `op<N>/design/mock.html`
+  (never `mock_v2.html`): `:art: Version <n> — <edit instruction or "manual edit">`.
+- **Branching follows the UI.** The UI lets the user edit an older version,
+  which forks its history. The git parent of a version commit is the git
+  commit of its UI parent version (written with `git commit-tree`), every
+  version is pinned by `refs/s2c/versions/<ui-commit-hash>`, and `main` points
+  at the most recent version.
+- **Commit 2+ — the app.** "🚀 Build app" commits `op<N>/app/**` on top of
+  the version it was built from: `:tada: First version` for the first build,
+  `:rocket: Build app from version <n>` afterwards.
+- **The UI shows the SHA.** After each version is committed the backend sends
+  `versionCommitted {commitHash, gitSha}`; the history panel shows the short
+  SHA next to "Version N" while keeping the existing version UX.
+- Commit author: `screenshot-to-code <noreply@screenshot-to-code.local>`.
+
+### 2.2 Linking requests to a run
+
+Today nothing ties an edit request to its create request (each websocket
+request gets a fresh `generation_id`; the UI's commit graph lives only in
+browser memory with `nanoid` hashes). New protocol fields:
+
+- Create: backend allocates `run-id`, sends `runInfo {runId}` first; the UI
+  stores it on the project.
+- Every request then sends `runId`, `commitHash` (the UI commit being
+  generated) and `parentCommitHash`; the backend commits into that run.
+- Manual edits: the code editor's `onCodeChange` (currently a no-op in
+  `PreviewPane.tsx`) is wired up. The first edit after an AI version creates
+  a new UI version of type `code_edit` (child of the current head);
+  subsequent edits update that same version. Saves are debounced (1.5 s idle)
+  and sent to `PUT /api/runs/{runId}/versions/{commitHash}` →
+  `{gitSha}`; each save is a new git commit on that version's ref.
+
 ## 3. Stack catalog and templates
 
 ```
@@ -122,19 +163,42 @@ use; must be called out in the README and gated behind an env flag
 
 ## 7. "🚀 Build app" pipeline (phase 2+ backend work)
 
-1. Create `data/runs/<run-id>/` (uploads + `op<N>/design/mock.html` are written
-   at generation time, so this step only validates them).
-2. Resolve target stack from catalog (source stack + chosen build system).
+Triggered by `POST /api/runs/{runId}/build {commitHash, buildSystem}`;
+progress via `GET /api/runs/{runId}/build` (per-option state, step, URL,
+error). Builds every option of the selected version, in parallel.
+
+1. Check out the version's mocks (`refs/s2c/versions/<commitHash>`); uploads
+   and `op<N>/design/mock.html` already exist from generation time.
+2. Resolve target stack from catalog (source stack + chosen build system;
+   default: the framework template for the source stack, else static).
 3. Derive app name from the prompt (slug; fallback `app-<short-run-id>`).
-4. Per option: copy template → `op<N>/app/`, run the stack's init/scaffold
-   step, migrate `mock.html` into the stack (phase 1: copy as
-   `public/index.html`; phase 2: LLM-assisted migration into components).
-5. `git init`, commit `:tada: First version`.
-6. `docker compose up -d --build`; poll health; report
-   `http://<APP_HOST>:3311` per option back to the UI.
+4. Per option: scaffold into `op<N>/app/` via the template's `scaffold.sh`
+   (static templates: copy), then **migrate** `mock.html` into the stack:
+   - static: copy as `public/index.html`;
+   - framework: one LLM call per option that turns the mock into the
+     template's `migration_targets` (e.g. `src/app/page.tsx`,
+     `src/app/layout.tsx`, `src/components/*.tsx`), returned as a file map
+     and validated (paths inside the app, allowed extensions only);
+   - the generator always writes `layout.tsx` with a **local system font
+     stack** instead of the scaffold's `next/font/google`, so builds need no
+     network access to Google Fonts.
+5. Lockfile (`scaffold.sh` produces it after the migrated sources land), then
+   commit (§2.1).
+6. Write `.env` (`APP_ID`, `APP_HOST`), `docker compose up -d --build --wait`,
+   then report `http://<APP_HOST>:3311/` per option to the UI.
 
 Errors at any step are reported per option; one option failing does not stop
 the other.
+
+### 7.1 Docker from inside the backend container
+
+The backend talks to the host daemon through the mounted socket, so bind
+mounts in `docker run -v` would resolve on the *host*, not in the backend
+container. Therefore `scaffold.sh` moves files with `docker create` +
+`docker cp` (no bind mounts), and generated compose files use only build
+contexts (sent by the CLI) — never host volumes. The backend image adds the
+Docker CLI + compose plugin and `git`; templates are mounted read-only at
+`/opt/stack-templates` (`STACK_TEMPLATES_DIR`).
 
 ## 8. UI
 
@@ -142,6 +206,7 @@ the other.
   values with a catalog entry for the current source stack are enabled).
 - "🚀 Build app" button next to "Select & edit"; shows per-option
   progress and the resulting URL.
+- History panel: short git SHA next to each "Version N" (tooltip: full SHA).
 
 ## 9. Testing
 
