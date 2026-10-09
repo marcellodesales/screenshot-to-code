@@ -57,6 +57,38 @@ ERROR_PAGE = """<!DOCTYPE html><html><body style="margin:0">""" + GRID_PAGE.spli
 )[1].split("</body>")[0] + """<script>throw new Error("boom");</script></body></html>"""
 
 
+def _pricing_card(
+    *,
+    align: str = "center",
+    width: str = "24rem",
+    font: str = "sans-serif",
+    button_shadow: str = "#d1fae5",
+) -> str:
+    """A React-ish pricing card on an off-white page (like the real mocks)."""
+    return f"""<!DOCTYPE html><html><head><style>
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; min-height: 100vh; display: flex; justify-content: center;
+       align-items: {align}; background: #fdfcfb; font-family: {font}; }}
+.card {{ max-width: {width}; width: 100%; background: #fff; border-radius: 24px;
+        overflow: hidden; border: 1px solid #f5f5f4;
+        box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1); }}
+.hero {{ height: 192px; background: #3d2b1f; color: #fff; display: flex;
+        align-items: center; justify-content: center; font-size: 30px; font-weight: 700; }}
+.body {{ padding: 32px; color: #1c1917; }}
+.price {{ font-size: 36px; font-weight: 700; margin-bottom: 32px; }}
+li {{ margin-bottom: 16px; color: #57534e; }}
+button {{ width: 100%; padding: 16px; border: 0; border-radius: 16px; color: #fff;
+         font-weight: 700; background: #059669; margin-top: 24px;
+         box-shadow: 0 10px 15px -3px {button_shadow}, 0 4px 6px -4px {button_shadow}; }}
+</style></head><body><div id="root"><div class="card">
+<div class="hero">The Artisan Blend</div><div class="body">
+<div class="price">$12 <small>/ month</small></div>
+<ul><li>Premium Single-Origin Beans</li><li>Fresh Roast-to-Door Delivery</li>
+<li>Exclusive Brewing Guides</li></ul><button>Subscribe Now</button>
+<p style="font-size:12px;color:#a8a29e;text-align:center">Cancel or pause anytime.</p>
+</div></div></div></body></html>"""
+
+
 @pytest.fixture
 async def chromium(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
     """A fresh shared browser per test (each test has its own event loop)."""
@@ -79,6 +111,25 @@ def test_similarity_identical_and_different_images() -> None:
     white = _png((255, 255, 255))
     assert similarity(white, white) == pytest.approx(1.0)
     assert similarity(white, _png((0, 0, 0))) < 0.05
+
+
+def _card_png(top: int, left: int, width: int, height: int) -> bytes:
+    image = Image.new("RGB", (1280, 900), (255, 255, 255))
+    for x in range(left, left + width):
+        for y in range(top, top + height):
+            image.putpixel((x, y), (17, 24, 39))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_similarity_is_foreground_aware_on_white_pages() -> None:
+    centred = _card_png(top=200, left=480, width=320, height=500)
+    assert similarity(centred, centred) == pytest.approx(1.0)
+    moved = _card_png(top=0, left=520, width=240, height=500)
+    assert similarity(centred, moved) < 0.80
+    blank = _png((255, 255, 255))
+    assert similarity(blank, centred) < 0.2
 
 
 def test_is_blank_threshold() -> None:
@@ -118,6 +169,35 @@ async def test_capture_very_different_pages(chromium: None) -> None:
     dark = await capture(DARK_PAGE)
     assert grid.thumbnail is not None and dark.thumbnail is not None
     assert similarity(grid.thumbnail, dark.thumbnail) < 0.8
+
+
+async def test_similarity_shadow_shade_is_still_a_duplicate(chromium: None) -> None:
+    # shadow-emerald-100 vs shadow-emerald-200 on the button: same design.
+    light = await capture(_pricing_card(button_shadow="#d1fae5"), widths=(1280,))
+    darker = await capture(_pricing_card(button_shadow="#a7f3d0"), widths=(1280,))
+    assert light.thumbnail is not None and darker.thumbnail is not None
+    assert similarity(light.thumbnail, darker.thumbnail) >= 0.97
+
+
+async def test_similarity_moved_narrower_card_on_white_page_is_low(
+    chromium: None,
+) -> None:
+    # Mostly-white pages: the background must not dominate the score.
+    mock = await capture(_pricing_card(), widths=(1280,))
+    app = await capture(
+        _pricing_card(align="flex-start", width="20rem", font="serif"),
+        widths=(1280,),
+    )
+    assert mock.thumbnail is not None and app.thumbnail is not None
+    assert similarity(mock.thumbnail, app.thumbnail) < 0.80
+
+
+async def test_similarity_blank_vs_card_is_low(chromium: None) -> None:
+    blank = await capture(BLANK_PAGE, widths=(1280,))
+    card = await capture(_pricing_card(), widths=(1280,))
+    assert blank.thumbnail is not None and card.thumbnail is not None
+    assert similarity(blank.thumbnail, card.thumbnail) < 0.2
+    assert similarity(card.thumbnail, blank.thumbnail) < 0.2
 
 
 async def test_blank_page_is_not_render_ok(chromium: None) -> None:

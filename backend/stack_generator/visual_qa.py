@@ -47,6 +47,11 @@ PARITY_WARNING = 0.80
 BLANK_PIXEL_SHARE = 0.98
 BLANK_TOLERANCE = 8
 SIMILARITY_THUMBNAIL_WIDTH = 256
+# Foreground masks (for IoU) are compared at this coarser width so
+# anti-aliasing and faint shadow halos don't count as layout changes.
+SIMILARITY_MASK_WIDTH = 128
+# A pixel is foreground when a channel differs from the page background by more.
+FOREGROUND_TOLERANCE = 24
 
 PAGE_LOAD_TIMEOUT_MS = 15000
 RENDER_SETTLE_MS = 250
@@ -189,41 +194,103 @@ def _open(png: bytes) -> Image.Image:
     return Image.open(io.BytesIO(png))
 
 
-def _grey_thumbnail(png: bytes) -> Image.Image:
-    image = _open(png).convert("L")
-    width, height = image.size
-    thumb_height = max(1, round(height * SIMILARITY_THUMBNAIL_WIDTH / max(1, width)))
-    return image.resize(
-        (SIMILARITY_THUMBNAIL_WIDTH, thumb_height), Image.Resampling.BILINEAR
+def _thumbnail(png: bytes, width: int) -> Image.Image:
+    image = _open(png).convert("RGB")
+    thumb_height = max(1, round(image.height * width / max(1, image.width)))
+    return image.resize((width, thumb_height), Image.Resampling.BILINEAR)
+
+
+def _background(image: Image.Image) -> tuple[int, int, int]:
+    """The page's dominant colour (exact colours via a nearest-neighbour sample)."""
+    sample = image.resize(
+        (max(1, image.width // 2), max(1, image.height // 2)),
+        Image.Resampling.NEAREST,
     )
+    colors = sample.getcolors(maxcolors=sample.width * sample.height) or []
+    if not colors:
+        return (255, 255, 255)
+    _, color = max(colors, key=lambda item: item[0])
+    return cast(tuple[int, int, int], color)
 
 
-def _commonest_grey(image: Image.Image) -> int:
-    histogram = image.histogram()
-    return max(range(256), key=lambda value: histogram[value])
-
-
-def _padded(image: Image.Image, height: int) -> Image.Image:
+def _padded(
+    image: Image.Image, height: int, color: tuple[int, int, int]
+) -> Image.Image:
     if image.height == height:
         return image
     # Pad with the page's own background so a slightly taller page isn't
     # penalised as if the extra strip were different content.
-    canvas = Image.new("L", (image.width, height), _commonest_grey(image))
+    canvas = Image.new("RGB", (image.width, height), color)
     canvas.paste(image, (0, 0))
     return canvas
 
 
-def similarity(a: bytes, b: bytes) -> float:
-    """Perceptual similarity of two screenshots in [0, 1] (1 = identical).
+def _foreground_mask(image: Image.Image, background: tuple[int, int, int]) -> Image.Image:
+    """255 where any channel is > FOREGROUND_TOLERANCE away from the background."""
+    difference = ImageChops.difference(image, Image.new("RGB", image.size, background))
+    red, green, blue = difference.split()
+    channel_max = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    return channel_max.point(lambda value: 255 if value > FOREGROUND_TOLERANCE else 0)
 
-    1 - normalised mean absolute difference of 256-px-wide greyscale
-    thumbnails; the shorter one is padded with its background colour.
-    """
-    first, second = _grey_thumbnail(a), _grey_thumbnail(b)
+
+def _mask_count(mask: Image.Image) -> float:
+    return float(ImageStat.Stat(mask).sum[0]) / 255.0
+
+
+def _prepared(
+    a: bytes, b: bytes, width: int
+) -> tuple[Image.Image, Image.Image, Image.Image, Image.Image]:
+    """Same-size thumbnails of both pages and their foreground masks."""
+    first, second = _thumbnail(a, width), _thumbnail(b, width)
+    first_bg, second_bg = _background(first), _background(second)
     height = max(first.height, second.height)
-    difference = ImageChops.difference(_padded(first, height), _padded(second, height))
-    mean = ImageStat.Stat(difference).mean[0]
-    return max(0.0, min(1.0, 1.0 - mean / 255.0))
+    first = _padded(first, height, first_bg)
+    second = _padded(second, height, second_bg)
+    return (
+        first,
+        second,
+        _foreground_mask(first, first_bg),
+        _foreground_mask(second, second_bg),
+    )
+
+
+def similarity(a: bytes, b: bytes) -> float:
+    """Foreground-aware similarity of two screenshots in [0, 1] (1 = identical).
+
+    Each page's dominant colour is its background; pixels further than
+    FOREGROUND_TOLERANCE from it are foreground. The score is the minimum of:
+
+    - the IoU of the two foreground masks (128 px wide) — where things are;
+    - 1 - mean absolute grey difference over the union of foreground pixels
+      (256 px wide) — what they look like;
+    - 1 - mean absolute grey difference over the whole page — catches a
+      different background with matching content.
+
+    A plain whole-page difference lets a mostly-white background dominate
+    (a moved, resized card scored ~0.90); the foreground terms don't. The
+    shorter page is padded with its own background. Two blank pages with
+    the same background score 1.
+    """
+    _, _, first_mask, second_mask = _prepared(a, b, SIMILARITY_MASK_WIDTH)
+    union_count = _mask_count(ImageChops.lighter(first_mask, second_mask))
+    iou = (
+        1.0
+        if union_count == 0
+        else _mask_count(ImageChops.darker(first_mask, second_mask)) / union_count
+    )
+
+    first, second, first_mask, second_mask = _prepared(a, b, SIMILARITY_THUMBNAIL_WIDTH)
+    difference = ImageChops.difference(first.convert("L"), second.convert("L"))
+    page_score = 1.0 - ImageStat.Stat(difference).mean[0] / 255.0
+    union = ImageChops.lighter(first_mask, second_mask)
+    union_count = _mask_count(union)
+    foreground_score = (
+        1.0
+        if union_count == 0
+        else 1.0
+        - float(ImageStat.Stat(difference, union).sum[0]) / union_count / 255.0
+    )
+    return max(0.0, min(1.0, iou, foreground_score, page_score))
 
 
 def is_blank(png: bytes) -> bool:
