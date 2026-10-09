@@ -1,0 +1,46 @@
+# Generated-service contract (design spec section 5):
+#   - project name = APP_ID, so `docker compose down` is scoped to this app
+#   - listens on 3000, NO host ports: the Traefik gateway is the only way in
+#   - joins the external `traefik_webgateway` network
+name: ${APP_ID:?APP_ID must be set in .env}
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_NAME: ${APP_ID}
+    image: ${APP_ID}:latest
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      NEXT_TELEMETRY_DISABLED: "1"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    # List form so ${APP_ID} is interpolated inside the label keys as well.
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_webgateway"
+      - "traefik.http.routers.${APP_ID}.rule=Host(`${APP_HOST:?APP_HOST must be set in .env}`)"
+      - "traefik.http.routers.${APP_ID}.entrypoints=web"
+      - "traefik.http.services.${APP_ID}.loadbalancer.server.port=3000"
+    networks:
+      - traefik
+
+networks:
+  traefik:
+    name: traefik_webgateway
+    external: true

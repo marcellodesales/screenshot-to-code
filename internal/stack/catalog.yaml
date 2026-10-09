@@ -23,7 +23,7 @@ stacks:
     source_stacks: [react_tailwind]
     build_system: pnpm
     phase: 2
-    status: in-progress
+    status: available
 
   - id: vite-react-tailwind-pnpm
     source_stacks: [react_tailwind]

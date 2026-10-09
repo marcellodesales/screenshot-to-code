@@ -4,7 +4,9 @@
 #
 #   internal/stack/test-template.sh <stack-id> [fixture-html] [marker]
 #
-# 1. copies internal/stack/<stack-id>/ to a temp dir
+# 1. copies internal/stack/<stack-id>/ to a temp dir, or, when the template
+#    has an executable scaffold.sh, runs it with the template's tests/fixture/
+#    as migrated sources
 # 2. copies the fixture into the template's `mock_path` (from template.yaml)
 # 3. writes .env with APP_ID=tst-<stack-id>-<rand> and APP_HOST=<APP_ID>.localhost
 # 4. docker compose up -d --build --wait
@@ -12,7 +14,8 @@
 #    asserts the marker is in the body
 # 6. docker compose down --rmi local -v (always, via trap)
 #
-# Marker: 3rd argument, else parsed from the fixture's
+# Marker: 3rd argument, else template.yaml `test_fixture.marker` (scaffolded
+# templates), else parsed from the fixture's
 #   <!-- s2c-fixture-marker: <MARKER> -->
 # comment.
 #
@@ -35,8 +38,17 @@ log() { echo "==> $*"; }
 
 [[ $# -ge 1 ]] || die "usage: $0 <stack-id> [fixture-html] [marker]"
 STACK_ID="$1"
-FIXTURE="${2:-$SCRIPT_DIR/fixtures/react-tailwind-mock.html}"
 TEMPLATE_DIR="$SCRIPT_DIR/$STACK_ID"
+# Templates with a scaffold.sh are generated (not copied) and need migrated
+# sources, so they ship their own fixture: tests/fixture/ (design/mock.html +
+# hand-migrated src/) with the marker in template.yaml `test_fixture.marker`.
+SCAFFOLD="$TEMPLATE_DIR/scaffold.sh"
+FIXTURE_DIR="$TEMPLATE_DIR/tests/fixture"
+if [[ -x "$SCAFFOLD" ]]; then
+  FIXTURE="${2:-$FIXTURE_DIR/design/mock.html}"
+else
+  FIXTURE="${2:-$SCRIPT_DIR/fixtures/react-tailwind-mock.html}"
+fi
 
 [[ -d "$TEMPLATE_DIR" ]] || die "no template directory: $TEMPLATE_DIR"
 [[ -f "$TEMPLATE_DIR/template.yaml" ]] || die "missing $TEMPLATE_DIR/template.yaml"
@@ -51,7 +63,11 @@ MOCK_PATH="$(yaml_get mock_path "$TEMPLATE_DIR/template.yaml")"
 [[ -n "$MOCK_PATH" ]] || die "template.yaml has no top-level 'mock_path:'"
 case "$MOCK_PATH" in /*|*..*) die "mock_path must be relative to the template: $MOCK_PATH" ;; esac
 
-MARKER="${3:-$(sed -nE 's/.*s2c-fixture-marker:[[:space:]]*([^[:space:]]+).*/\1/p' "$FIXTURE" | head -n1)}"
+MARKER="${3:-}"
+if [[ -z "$MARKER" && -x "$SCAFFOLD" ]]; then
+  MARKER="$(sed -nE 's/^[[:space:]]+marker:[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p' "$TEMPLATE_DIR/template.yaml" | head -n1)"
+fi
+[[ -n "$MARKER" ]] || MARKER="$(sed -nE 's/.*s2c-fixture-marker:[[:space:]]*([^[:space:]]+).*/\1/p' "$FIXTURE" | head -n1)"
 [[ -n "$MARKER" ]] || die "no marker: pass one or add '<!-- s2c-fixture-marker: X -->' to the fixture"
 
 docker network inspect traefik_webgateway >/dev/null 2>&1 \
@@ -83,8 +99,13 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-log "template  $STACK_ID -> $APP_DIR"
-cp -R "$TEMPLATE_DIR" "$APP_DIR"
+if [[ -x "$SCAFFOLD" ]]; then
+  log "scaffold  $STACK_ID -> $APP_DIR (sources $FIXTURE_DIR)"
+  "$SCAFFOLD" "$APP_DIR" "$APP_ID" "$FIXTURE_DIR"
+else
+  log "template  $STACK_ID -> $APP_DIR"
+  cp -R "$TEMPLATE_DIR" "$APP_DIR"
+fi
 mkdir -p "$(dirname "$APP_DIR/$MOCK_PATH")"
 cp "$FIXTURE" "$APP_DIR/$MOCK_PATH"
 log "fixture   $FIXTURE -> $MOCK_PATH (marker $MARKER)"
