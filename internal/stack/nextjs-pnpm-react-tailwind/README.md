@@ -67,10 +67,10 @@ docker run --rm -v "$PWD":/work -w /work \
 | `ReactDOM.createRoot(...).render(<App />)` and `<div id="root">` | **Dropped** — Next renders `page.tsx` into `layout.tsx`. |
 | `className="…"` Tailwind utilities | **Carry over unchanged.** Tailwind v4 scans `src/` automatically. Inline `tailwind.config = {…}` customisations become `@theme { … }` in `globals.css`. |
 | `<title>`, `<meta>` | `export const metadata` in `src/app/layout.tsx`. |
-| Google Fonts `<link>` | `next/font/google` in `layout.tsx` (fetched at build time, self-hosted). |
+| Google Fonts `<link>` | **Dropped.** No `next/font`: the generator rewrites `layout.tsx` and points `--font-sans`/`--font-mono` in `globals.css` at a system font stack (`apply_system_fonts`), so builds need no network. |
 | `<style>` blocks | `src/app/globals.css`. |
 | Local/inline images and assets | `public/` (referenced as `/file.png`). Remote images (placehold.co, unsplash, …) stay as plain `<img>`; switching to `next/image` requires `images.remotePatterns` in `next.config.ts`. |
-| Font Awesome / icon CDNs | Keep the `<link>` in `layout.tsx` `<head>` or swap for an npm package. |
+| Font Awesome / icon CDNs | Swap for an npm package or inline SVG components (`layout.tsx` is regenerated, so a `<link>` there does not survive). |
 | `onClick="…"` strings / `document.querySelector` scripts | Rewrite as React state + handlers inside a `"use client"` component. |
 | `body` classes | `<body className=…>` in `layout.tsx`. |
 
