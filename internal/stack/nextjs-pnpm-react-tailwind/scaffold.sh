@@ -9,9 +9,12 @@
 # 3. optional [sources-dir] copied on top (migrated src/, public/, design/)
 # 4. pnpm-lock.yaml, so the Dockerfile's --frozen-lockfile build is reproducible
 #
-# Everything runs in the pinned node image: no host Node/pnpm needed. The
-# scaffold runs in a container-local cwd and is copied out at the end, which
-# avoids pnpm leaving a dlx store in a bind-mounted directory.
+# Everything runs in the pinned node image: no host Node/pnpm needed. Files
+# move with `docker create` + `docker cp` (never `-v` bind mounts): the
+# backend container drives the *host* daemon through the mounted socket, so a
+# bind path would resolve on the host, not where this script runs (spec §7.1).
+# The scaffold runs in a container-local cwd (/tmp), which also avoids pnpm
+# leaving a dlx store in the destination.
 #
 # Keep the pins below in sync with template.yaml `scaffold.versions`.
 set -euo pipefail
@@ -34,14 +37,19 @@ TEMPLATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$DEST"
 [[ -z "$(ls -A "$DEST")" ]] || die "destination is not empty: $DEST"
 DEST="$(cd "$DEST" && pwd)"
-
-mounts=(-v "$TEMPLATE_DIR:/template:ro" -v "$DEST:/out")
 if [[ -n "$SOURCES" ]]; then
   [[ -d "$SOURCES" ]] || die "sources dir not found: $SOURCES"
-  mounts+=(-v "$(cd "$SOURCES" && pwd):/sources:ro")
 fi
 
-docker run --rm "${mounts[@]}" \
+CONTAINER=""
+cleanup() {
+  if [[ -n "$CONTAINER" ]]; then
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+CONTAINER="$(docker create \
   -e APP_NAME="$APP_NAME" \
   -e PNPM_VERSION="$PNPM_VERSION" \
   -e CREATE_NEXT_APP_VERSION="$CREATE_NEXT_APP_VERSION" \
@@ -62,9 +70,18 @@ docker run --rm "${mounts[@]}" \
     npm pkg set "packageManager=pnpm@$PNPM_VERSION"
     pnpm install --lockfile-only --store-dir /tmp/pnpm-store
     rm -rf node_modules
-    cp -R . /out/
-    # Hand the files back to the invoking user (matters on Linux hosts).
-    chown -R "$(stat -c %u:%g /out)" /out
-  '
+  ')"
+
+# Inputs go into the created (not yet started) container; `docker cp` creates
+# the destination directories.
+docker cp "$TEMPLATE_DIR/." "$CONTAINER:/template"
+if [[ -n "$SOURCES" ]]; then
+  docker cp "$SOURCES/." "$CONTAINER:/sources"
+fi
+
+docker start -a "$CONTAINER"
+
+# `docker cp` out writes the files as the invoking user: no chown needed.
+docker cp "$CONTAINER:/tmp/$APP_NAME/." "$DEST/"
 
 echo "scaffold: $APP_NAME -> $DEST"

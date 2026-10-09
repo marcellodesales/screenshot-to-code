@@ -45,14 +45,25 @@ services:
     #   data/run_logs/prompt_reports/                 per-LLM-call JSON reports
     #   data/local_assets/                            uploaded/generated images
     #   data/design-systems.json                      saved design systems
-    # Uploaded videos are not stored; they are sent to Gemini in memory.
+    #   data/runs/<run-id>/                           git-versioned run workspace
+    #     (stack.yaml, uploads/ (gitignored), op<N>/design/mock.html, op<N>/app/)
     environment:
       - PROMPT_REPORTS_ENABLED=true
       - LOGS_PATH=/data
       - LOCAL_ASSET_DIR=/data/local_assets
       - SCREENSHOT_TO_CODE_DATA_DIR=/data
+      # Stack generator ("Build app"); off by default, see README.
+      - STACK_TEMPLATES_DIR=/opt/stack-templates
+      - RUNS_DIR=/data/runs
+      - STACK_GENERATOR_ENABLED=${STACK_GENERATOR_ENABLED:-false}
     volumes:
       - ./data:/data
+      - ./internal/stack:/opt/stack-templates:ro
+      # TRUST BOUNDARY: the Docker socket is root-equivalent on the host. The
+      # backend's Docker CLI + compose use it to scaffold, build and run
+      # generated apps on the host daemon, only when
+      # STACK_GENERATOR_ENABLED=true. Local use only.
+      - /var/run/docker.sock:/var/run/docker.sock
 
     # BACKEND_PORT is the port uvicorn listens on inside the container (and the
     # default host port). BACKEND_HOST_PORT only changes the published host port,

@@ -103,6 +103,27 @@ docker-compose up -d --build
 
 The app will be up and running at http://localhost:5173. Note that you can't develop the application with this setup, as file changes won't trigger a rebuild.
 
+### Stack generator (Build app)
+
+Every generation is saved as a git-versioned run under `data/runs/<run-id>/`. The history panel shows each version's short git SHA. The **🚀 Build app** button turns the selected version into a real project and runs it:
+
+1. It picks a target stack from `internal/stack/catalog.yaml` using the source stack and the **Build system** setting. React + Tailwind mocks become `nextjs-pnpm-react-tailwind`; everything else becomes `static-pnpm-html`.
+2. For each option, it scaffolds `op<N>/app/` from the template and migrates the mock into it. Next.js apps need one LLM call per option.
+3. It commits the app (`:tada: First version`, later `:rocket: Build app from version <n>`) and runs `docker compose up -d --build --wait` against the host Docker daemon.
+
+Each option is served through the Traefik gateway at `http://<APP_ID>.localhost:3311/`, for example `http://run-20261008-101500-ab12cd34-op1.localhost:3311/`. `APP_ID` is the run id with `_` replaced by `-`, plus `-op<N>`. Browsers resolve `*.localhost` to 127.0.0.1, so no DNS setup is needed.
+
+The feature is off by default. To enable it, start the stack with:
+
+```bash
+STACK_GENERATOR_ENABLED=true docker compose up -d --build
+```
+
+You can also put `STACK_GENERATOR_ENABLED=true` in the root `.env`. While it is off, the build endpoints return 403.
+
+> [!WARNING]
+> **Trust boundary:** the backend container mounts `/var/run/docker.sock` so it can build and run generated apps. Access to the Docker socket is **root-equivalent on the host**: anything that can reach the backend's build endpoints can start arbitrary containers on your machine. Use this only locally, never expose the backend publicly with `STACK_GENERATOR_ENABLED=true`, and remove the socket mount from `docker-compose.yml` if you don't use the feature.
+
 ## 🙋‍♂️ FAQs
 
 - **I'm running into an error when setting up the backend. How can I fix it?** [Try this](https://github.com/abi/screenshot-to-code/issues/3#issuecomment-1814777959). If that still doesn't work, open an issue.
