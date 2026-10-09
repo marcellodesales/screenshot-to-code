@@ -337,3 +337,16 @@ def test_migration_models_use_the_current_generation_per_provider() -> None:
     assert migrate.ANTHROPIC_MIGRATION_MODEL == Llm.CLAUDE_OPUS_5_5_MEDIUM
     assert migrate.OPENAI_MIGRATION_MODEL == Llm.GPT_5_6_SOL_HIGH
     assert migrate.GEMINI_MIGRATION_MODEL == Llm.GEMINI_3_8_FLASH_HIGH
+
+
+def test_migration_prompt_requires_deterministic_prerender_safe_render() -> None:
+    from stack_generator.prompts import MIGRATION_SYSTEM_PROMPT
+
+    prompt = MIGRATION_SYSTEM_PROMPT
+    assert "deterministic" in prompt
+    assert "prerender" in prompt
+    for unstable in ("new Date()", "Date.now()", "Math.random()", "window", "document"):
+        assert unstable in prompt
+    # Where such values belong instead.
+    assert "useEffect" in prompt
+    assert "hard-code" in prompt.lower()

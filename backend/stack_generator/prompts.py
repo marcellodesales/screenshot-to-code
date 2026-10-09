@@ -23,6 +23,13 @@ Rules:
   system font stack, so do not rely on anything you put there.
 - Rewrite inline onclick strings and document.querySelector scripts as React state
   and handlers.
+- Render must be deterministic and prerender-safe: `next build` prerenders every
+  page, so never call new Date(), Date.now() or Math.random(), and never read
+  window or document, while rendering (component bodies, JSX, useState/useMemo
+  initialisers that also run on the server). Hard-code such values when they
+  are static (e.g. write the copyright year as a literal instead of
+  new Date().getFullYear()); otherwise start from a fixed initial state and
+  compute them on the client in useEffect.
 - The code must compile with `next build` (strict TypeScript): type props and
   event handlers.
 - Do not call any tools.
