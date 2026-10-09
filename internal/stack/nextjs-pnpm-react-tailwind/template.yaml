@@ -1,0 +1,72 @@
+# Template metadata — mirrors this stack's entry in internal/stack/catalog.yaml.
+id: nextjs-pnpm-react-tailwind
+name: Next.js + React + Tailwind (pnpm)
+description: >-
+  Production Next.js (App Router, TypeScript, Tailwind v4) app migrated from a
+  single-file React+Tailwind mock; built with pnpm into a standalone,
+  non-root container served behind the Traefik gateway.
+runtime: nextjs
+ui: react
+styling: tailwind
+build_system: pnpm
+source_stacks: [react_tailwind]
+phase: 2
+port: 3000
+healthcheck_path: /
+
+# Strategy: scaffold first (official create-next-app, pinned), then copy the
+# overlay files on top, then migrate design/mock.html into src/.
+scaffold:
+  # Runs in the parent of the app dir; {{app_name}} = slugged app name, which
+  # becomes the directory name and package.json "name". If that parent is a
+  # bind mount, pnpm puts its dlx store in ./node_modules/.pnpm-store there:
+  # run from a container-local cwd (e.g. /tmp) and move the app, or delete it.
+  # Reference runner (no host Node needed):
+  #   docker run --rm -v "$PWD":/work -w /work -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+  #     -e NEXT_TELEMETRY_DISABLED=1 node:22.23.3-alpine3.24 sh -c \
+  #     'corepack enable && corepack prepare pnpm@12.10.1 --activate && <command>'
+  command: >-
+    pnpm dlx create-next-app@16.4.0 {{app_name}}
+    --ts --tailwind --eslint --app --src-dir --import-alias "@/*"
+    --use-pnpm --skip-install --disable-git --no-agent-feedback --yes
+  # After overlay + migration, inside the app dir: produce pnpm-lock.yaml so the
+  # Dockerfile's `pnpm install --frozen-lockfile` is reproducible. Use a store
+  # outside the app dir (pnpm otherwise may create node_modules/.pnpm-store).
+  lockfile_command: pnpm install --lockfile-only --store-dir /tmp/pnpm-store
+  env:
+    NEXT_TELEMETRY_DISABLED: "1"
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+  versions:                     # verified 2026-10-08
+    create-next-app: 16.4.0
+    next: 16.4.0
+    react: 19.3.0
+    react-dom: 19.3.0
+    tailwindcss: 4.3.3          # scaffold declares ^4, lockfile resolves 4.3.3
+    typescript: 5.9.3           # scaffold declares ^5
+    pnpm: 12.10.1               # written to package.json#packageManager
+    node: 22.23.3               # image node:22.23.3-alpine3.24
+    node_image: node:22.23.3-alpine3.24@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+
+# Where the raw generated mock is stored inside the app for the migration step
+# (excluded from the Docker build context by .dockerignore).
+mock_path: design/mock.html
+
+# Copied verbatim over the scaffold output (overwriting same-named files).
+overlay:
+  - Dockerfile
+  - .dockerignore
+  - docker-compose.yaml
+  - .env.example
+  - next.config.ts
+
+# Files the migration step must produce/overwrite (see README "Migration").
+migration_targets:
+  - src/app/page.tsx
+  - src/app/layout.tsx          # metadata/title, fonts, <html> classes
+  - src/components/*.tsx
+  - public/*                    # images/assets referenced by the mock
+
+# NOT copied into generated apps; used only by the template test.
+test_fixture:
+  dir: tests/fixture             # design/mock.html + hand-migrated src/
+  marker: STACK-FIXTURE-MARKER nextjs-pnpm-react-tailwind

@@ -1,0 +1,46 @@
+# Dependencies / build output: always rebuilt inside the image
+node_modules
+**/node_modules
+.next
+out
+build
+coverage
+*.tsbuildinfo
+next-env.d.ts
+
+# VCS, editor and OS noise
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.pnpm-store
+
+# Raw design input (mock.html etc.) is source material, not app code
+design
+
+# Local env and secrets never go into the build context
+.env
+.env.*
+!.env.example
+*.pem
+
+# Container / deploy files themselves
+Dockerfile
+.dockerignore
+docker-compose*.yaml
+docker-compose*.yml
+compose*.yaml
+compose*.yml
+
+# Docs and agent notes
+README.md
+AGENTS.md
+CLAUDE.md
+template.yaml
+tests
