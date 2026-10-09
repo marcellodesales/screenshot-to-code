@@ -281,6 +281,11 @@ function App() {
       return;
     }
 
+    if (currentCommit.type === "code_edit") {
+      toast.error("Manual edits cannot be regenerated.");
+      return;
+    }
+
     // Re-run the initial create request.
     if (inputMode === "image" || inputMode === "video") {
       doCreate(referenceImages, inputMode);

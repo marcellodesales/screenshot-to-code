@@ -8,6 +8,8 @@ function displayHistoryItemType(itemType: CommitType) {
       return "Edit";
     case "code_create":
       return "Imported from code";
+    case "code_edit":
+      return "Manual edit";
     default: {
       const exhaustiveCheck: never = itemType;
       throw new Error(`Unhandled case: ${exhaustiveCheck}`);
@@ -37,7 +39,7 @@ function extractTagName(html: string): string {
 }
 
 function getCommitMedia(commit: Commit): { images: string[]; videos: string[] } {
-  if (commit.type === "code_create") {
+  if (commit.type === "code_create" || commit.type === "code_edit") {
     return { images: [], videos: [] };
   }
   return {
@@ -55,6 +57,8 @@ export function summarizeHistoryItem(commit: Commit): string {
       return commit.inputs.text || "Edit";
     case "code_create":
       return "Imported from code";
+    case "code_edit":
+      return "Manual edit";
     default: {
       const exhaustiveCheck: never = commitType;
       throw new Error(`Unhandled case: ${exhaustiveCheck}`);
@@ -63,7 +67,7 @@ export function summarizeHistoryItem(commit: Commit): string {
 }
 
 export function getSelectedElementTag(commit: Commit): string | null {
-  if (commit.type === "code_create") return null;
+  if (commit.type === "code_create" || commit.type === "code_edit") return null;
   const html = commit.inputs.selectedElementHtml;
   if (!html) return null;
   return extractTagName(html);

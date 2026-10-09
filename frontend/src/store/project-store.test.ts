@@ -135,3 +135,93 @@ describe("run linkage", () => {
     expect(useProjectStore.getState().commits).toEqual({});
   });
 });
+
+describe("manual edits", () => {
+  function committedVersion(hash: string, codes: string[], selected = 0): Commit {
+    return {
+      hash,
+      parentHash: null,
+      dateCreated: new Date(1_000),
+      isCommitted: false,
+      variants: codes.map((code) => ({ code, history: [] })),
+      selectedVariantIndex: selected,
+      type: "ai_create",
+      inputs: { text: "Create a page", images: [] },
+    };
+  }
+
+  beforeEach(() => {
+    useProjectStore.setState({
+      commits: {},
+      head: null,
+      latestCommitHash: null,
+      runId: null,
+    });
+  });
+
+  it("applyManualEdit creates code_edit once then updates it", () => {
+    const store = useProjectStore.getState();
+    store.addCommit(committedVersion("v1", ["<a/>", "<b/>"], 1));
+    store.setHead("v1");
+
+    const first = useProjectStore.getState().applyManualEdit("<b>1</b>");
+    const afterFirst = useProjectStore.getState();
+    expect(first).not.toBeNull();
+    expect(first).not.toBe("v1");
+    expect(afterFirst.head).toBe(first);
+    const created = afterFirst.commits[first!];
+    expect(created.type).toBe("code_edit");
+    expect(created.parentHash).toBe("v1");
+    expect(created.inputs).toBeNull();
+    expect(created.variants).toHaveLength(1);
+    expect(created.variants[0].code).toBe("<b>1</b>");
+    expect(created.variants[0].status).toBe("complete");
+    // The edited option of the parent version (used for backend saves).
+    expect(created.type === "code_edit" && created.optionIndex).toBe(1);
+    // The parent version is untouched.
+    expect(afterFirst.commits["v1"].variants[1].code).toBe("<b/>");
+
+    const second = useProjectStore.getState().applyManualEdit("<b>2</b>");
+    const afterSecond = useProjectStore.getState();
+    expect(second).toBe(first);
+    expect(Object.keys(afterSecond.commits)).toHaveLength(2);
+    expect(afterSecond.commits[first!].variants[0].code).toBe("<b>2</b>");
+  });
+
+  it("editing an older version forks a new code_edit from it", () => {
+    const store = useProjectStore.getState();
+    store.addCommit(committedVersion("v1", ["<a/>"]));
+    store.setHead("v1");
+    const edit1 = useProjectStore.getState().applyManualEdit("<a>1</a>")!;
+
+    // Go back to v1 (now committed) and edit again: a sibling version.
+    useProjectStore.getState().setHead("v1");
+    const edit2 = useProjectStore.getState().applyManualEdit("<a>2</a>")!;
+
+    const state = useProjectStore.getState();
+    expect(edit2).not.toBe(edit1);
+    expect(state.commits[edit2].parentHash).toBe("v1");
+    expect(state.commits[edit1].variants[0].code).toBe("<a>1</a>");
+    expect(state.commits[edit1].isCommitted).toBe(true);
+  });
+
+  it("a code_edit child of a code_edit keeps the original option index", () => {
+    const store = useProjectStore.getState();
+    store.addCommit(committedVersion("v1", ["<a/>", "<b/>", "<c/>"], 2));
+    store.setHead("v1");
+    const edit1 = useProjectStore.getState().applyManualEdit("<c>1</c>")!;
+    // Committing edit1 (e.g. a later version was added) then editing it.
+    store.addCommit({ ...committedVersion("v3", ["<x/>"]), parentHash: edit1 });
+    useProjectStore.getState().setHead(edit1);
+    const edit2 = useProjectStore.getState().applyManualEdit("<c>2</c>")!;
+
+    const commit = useProjectStore.getState().commits[edit2];
+    expect(commit.parentHash).toBe(edit1);
+    expect(commit.type === "code_edit" && commit.optionIndex).toBe(2);
+  });
+
+  it("applyManualEdit without a head does nothing", () => {
+    expect(useProjectStore.getState().applyManualEdit("<a/>")).toBeNull();
+    expect(useProjectStore.getState().commits).toEqual({});
+  });
+});

@@ -52,7 +52,7 @@ export type BaseCommit = {
   gitSha?: string;
 };
 
-export type CommitType = "ai_create" | "ai_edit" | "code_create";
+export type CommitType = "ai_create" | "ai_edit" | "code_create" | "code_edit";
 
 export type AiCreateCommit = BaseCommit & {
   type: "ai_create";
@@ -69,4 +69,18 @@ export type CodeCreateCommit = BaseCommit & {
   inputs: null;
 };
 
-export type Commit = AiCreateCommit | AiEditCommit | CodeCreateCommit;
+// A version created by editing code by hand in the code editor. It holds the
+// edited option only; `optionIndex` is the option of the backend version it
+// replaces (the parent's selected option, or the parent's own `optionIndex`
+// when the parent is itself a manual edit).
+export type CodeEditCommit = BaseCommit & {
+  type: "code_edit";
+  inputs: null;
+  optionIndex: number;
+};
+
+export type Commit =
+  | AiCreateCommit
+  | AiEditCommit
+  | CodeCreateCommit
+  | CodeEditCommit;

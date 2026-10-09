@@ -42,6 +42,7 @@ function extractTagName(html: string): string {
 function summarizeLatestChange(commit: Commit | null): string | null {
   if (!commit) return null;
   if (commit.type === "code_create") return "Imported existing code.";
+  if (commit.type === "code_edit") return "Edited the code manually.";
 
   const text = commit.inputs.text.trim();
   if (text.length > 0) return text;
@@ -60,7 +61,8 @@ function summarizeLatestChange(commit: Commit | null): string | null {
 }
 
 function getSelectedElementTag(commit: Commit | null): string | null {
-  if (!commit || commit.type === "code_create") return null;
+  if (!commit || commit.type === "code_create" || commit.type === "code_edit")
+    return null;
   const html = commit.inputs.selectedElementHtml;
   if (!html) return null;
   return extractTagName(html);
@@ -158,14 +160,8 @@ function Sidebar({
   const currentCommit = head ? commits[head] : null;
   const latestChangeSummary = summarizeLatestChange(currentCommit);
   const selectedElementTag = getSelectedElementTag(currentCommit);
-  const latestChangeImages =
-    currentCommit && currentCommit.type !== "code_create"
-      ? currentCommit.inputs.images
-      : [];
-  const latestChangeVideos =
-    currentCommit && currentCommit.type !== "code_create"
-      ? currentCommit.inputs.videos ?? []
-      : [];
+  const latestChangeImages = currentCommit?.inputs?.images ?? [];
+  const latestChangeVideos = currentCommit?.inputs?.videos ?? [];
   const selectedVariantIndex = currentCommit?.selectedVariantIndex ?? 0;
   const selectedVariant = currentCommit?.variants[selectedVariantIndex];
   const selectedVariantEvents = selectedVariant?.agentEvents ?? [];

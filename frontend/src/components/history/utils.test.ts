@@ -191,3 +191,26 @@ describe("renderHistory git SHA", () => {
     expect(rendered[0].gitSha).toBe(sha);
   });
 });
+
+describe("manual edit versions", () => {
+  test("labels code_edit versions as Manual edit", () => {
+    const rendered = renderHistory([
+      basicLinearHistory["0"],
+      {
+        hash: "m1",
+        dateCreated: new Date(),
+        isCommitted: false,
+        type: "code_edit",
+        parentHash: "0",
+        variants: [{ code: "<html>edited</html>", history: [] }],
+        selectedVariantIndex: 0,
+        inputs: null,
+        optionIndex: 0,
+      },
+    ]);
+    expect(rendered[1].type).toBe("Manual edit");
+    expect(rendered[1].summary).toBe("Manual edit");
+    expect(rendered[1].images).toEqual([]);
+    expect(rendered[1].selectedElementTag).toBeNull();
+  });
+});

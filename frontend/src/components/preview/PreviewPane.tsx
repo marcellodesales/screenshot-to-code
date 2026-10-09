@@ -11,7 +11,9 @@ import {
   LuRefreshCw,
   LuDownload,
 } from "react-icons/lu";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { nanoid } from "nanoid";
+import toast from "react-hot-toast";
 import { AppState, Settings } from "../../types";
 import CodeTab from "./CodeTab";
 import { Button } from "../ui/button";
@@ -23,6 +25,18 @@ import { downloadCode } from "./download";
 import { SelectAndEditToolbarButton } from "../select-and-edit/SelectAndEditControls";
 import { normalizeBabelCdn } from "../../lib/babelCdn";
 import ImageScanningPreview from "./ImageScanningPreview";
+import { useDebouncedCallback } from "../../hooks/useDebouncedCallback";
+import { saveVersion } from "../../lib/runs";
+
+// Manual edits are saved to the backend run after this much idle time.
+const MANUAL_EDIT_SAVE_DELAY_MS = 1500;
+
+interface ManualEditSave {
+  runId: string;
+  hash: string;
+  parentCommitHash: string | null;
+  optionIndex: number;
+}
 
 function prepareHtmlForNewTab(code: string) {
   const html = normalizeBabelCdn(code);
@@ -88,6 +102,69 @@ function PreviewPane({ settings, onOpenVersions }: Props) {
 
   const canSelectAndEdit =
     appState === AppState.CODE_READY || !!isSelectedVariantComplete;
+
+  // Saves run one after another so a version's git commits land in order.
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const saveManualEdit = useCallback((job: ManualEditSave) => {
+    saveChainRef.current = saveChainRef.current.then(async () => {
+      const commit = useProjectStore.getState().commits[job.hash];
+      if (!commit) return;
+      try {
+        const { gitSha } = await saveVersion(job.runId, job.hash, {
+          parentCommitHash: job.parentCommitHash,
+          optionIndex: job.optionIndex,
+          code: commit.variants[0]?.code ?? "",
+        });
+        useProjectStore.getState().setCommitGitSha(job.hash, gitSha);
+      } catch (error) {
+        console.error("Failed to save manual edit", error);
+        const reason = error instanceof Error ? error.message : String(error);
+        toast.error(`Could not save manual edit: ${reason}`, {
+          id: "manual-edit-save",
+        });
+      }
+    });
+  }, []);
+  const debouncedSave = useDebouncedCallback(
+    saveManualEdit,
+    MANUAL_EDIT_SAVE_DELAY_MS
+  );
+  const pendingSaveHashRef = useRef<string | null>(null);
+
+  // CodeMirror captures this callback once, so it reads everything from the
+  // stores instead of closing over render-time state.
+  const handleCodeChange = useCallback(
+    (code: string) => {
+      if (useAppStore.getState().appState !== AppState.CODE_READY) return;
+      const project = useProjectStore.getState();
+      const headCommit = project.head ? project.commits[project.head] : null;
+      if (!headCommit) return;
+      // The editor also reports programmatic syncs (version switches,
+      // streaming); only a real difference is a manual edit.
+      const headCode =
+        headCommit.variants[headCommit.selectedVariantIndex]?.code ?? "";
+      if (code === headCode) return;
+
+      const hash = project.applyManualEdit(code, nanoid());
+      const commit = hash ? useProjectStore.getState().commits[hash] : null;
+      if (!hash || !commit || commit.type !== "code_edit") return;
+      const runId = useProjectStore.getState().runId;
+      if (!runId) return; // e.g. imported code: no backend run to save into
+
+      // Never let a pending save of another version be replaced.
+      if (pendingSaveHashRef.current && pendingSaveHashRef.current !== hash) {
+        debouncedSave.flush();
+      }
+      pendingSaveHashRef.current = hash;
+      debouncedSave.call({
+        runId,
+        hash,
+        parentCommitHash: commit.parentHash,
+        optionIndex: commit.optionIndex,
+      });
+    },
+    [debouncedSave]
+  );
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -261,7 +338,7 @@ function PreviewPane({ settings, onOpenVersions }: Props) {
         <TabsContent value="code" className="flex-1 min-h-0 mt-0 overflow-auto">
           <CodeTab
             code={previewCode}
-            setCode={() => {}}
+            setCode={handleCodeChange}
             settings={settings}
           />
         </TabsContent>
