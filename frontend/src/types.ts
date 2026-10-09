@@ -68,6 +68,9 @@ export interface PromptContent {
   fullText?: string;
   images: string[]; // Array of data URLs
   videos?: string[]; // Array of data URLs
+  // JPEG data URLs sampled from the video (1 fps, max 20) for models that
+  // take images rather than video
+  videoFrames?: string[];
   selectedElementHtml?: string; // Raw HTML of selected element (for display only)
 }
 
