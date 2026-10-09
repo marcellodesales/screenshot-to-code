@@ -275,16 +275,13 @@ async def _render(
     widths: tuple[int, ...],
     load: Loader,
 ) -> CaptureResult:
+    # A missing/broken renderer raises: that is "no QA", not a failed render.
+    browser = await shared_chromium()
+    context = await browser.new_context(
+        viewport={"width": THUMBNAIL_WIDTH, "height": QA_HEIGHT},
+        device_scale_factor=1,
+    )
     result = CaptureResult()
-    try:
-        browser = await shared_chromium()
-        context = await browser.new_context(
-            viewport={"width": THUMBNAIL_WIDTH, "height": QA_HEIGHT},
-            device_scale_factor=1,
-        )
-    except Exception as exc:
-        result.errors.append(f"Renderer unavailable: {exc}")
-        return result
     try:
         page = await context.new_page()
         page.on("pageerror", lambda error: result.errors.append(str(error)))

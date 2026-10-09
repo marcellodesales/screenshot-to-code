@@ -1,16 +1,21 @@
 """Run workspace HTTP routes: stack catalog and manual-edit versions (spec §2.2)."""
 
 import asyncio
+import re
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from stack_generator.catalog import load_catalog
+from stack_generator.visual_qa import qa_dir
 from stack_generator.workspace import RunWorkspace
 
 router = APIRouter()
 
 MAX_CODE_BYTES = 2 * 1024 * 1024
+QA_FILE_PATTERN = re.compile(r"^(app-)?op\d+-\d+\.png$")
 
 
 class StackInfo(BaseModel):
@@ -91,3 +96,23 @@ async def save_version(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return SaveVersionResponse(gitSha=git_sha)
+
+
+def _qa_file(run_id: str, commit_hash: str, file_name: str) -> Path | None:
+    workspace = RunWorkspace.open(run_id)
+    # has_version also rejects malformed commit hashes (no path traversal).
+    if workspace is None or not workspace.has_version(commit_hash):
+        return None
+    path = qa_dir(workspace, commit_hash) / file_name
+    return path if path.is_file() else None
+
+
+@router.get("/api/runs/{run_id}/qa/{commit_hash}/{file_name}")
+async def get_qa_file(run_id: str, commit_hash: str, file_name: str) -> FileResponse:
+    """A visual QA screenshot (``op<N>-<width>.png`` / ``app-op<N>-<width>.png``)."""
+    if not QA_FILE_PATTERN.match(file_name):
+        raise HTTPException(status_code=404, detail="Not found")
+    path = await asyncio.to_thread(_qa_file, run_id, commit_hash, file_name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(path, media_type="image/png")

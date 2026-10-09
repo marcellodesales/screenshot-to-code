@@ -4,6 +4,7 @@ Layout (spec §2, §2.1):
 
     stack.yaml                 run metadata + versions index
     uploads/{video,screenshots}/  original uploads (gitignored)
+    qa/<ui-commit-hash>/       visual QA screenshots + qa.json (gitignored)
     op<N>/design/mock.html     option N of the selected version (1-based)
     op<N>/app/                 generated app ("Build app")
 
@@ -46,7 +47,7 @@ _GIT_IDENTITY = {
     "GIT_COMMITTER_NAME": "screenshot-to-code",
     "GIT_COMMITTER_EMAIL": "noreply@screenshot-to-code.local",
 }
-_GITIGNORE = "uploads/\n"
+_GITIGNORE = "uploads/\nqa/\n"
 _VERSION_REF_PREFIX = "refs/s2c/versions/"
 
 # Serialises git/stack.yaml mutations per run (websocket + HTTP edits).
@@ -236,6 +237,8 @@ class RunWorkspace:
             for directory in stale:
                 shutil.rmtree(self.path / directory, ignore_errors=True)
             files[".gitignore"] = _GITIGNORE
+            # Older runs predate some ignore rules; keep the working copy in sync.
+            (self.path / ".gitignore").write_text(_GITIGNORE, encoding="utf-8")
             files["stack.yaml"] = (self.path / "stack.yaml").read_text(encoding="utf-8")
 
             sha = self._commit(parent_sha, files, message, remove=stale)

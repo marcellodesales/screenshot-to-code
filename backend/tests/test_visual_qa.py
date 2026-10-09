@@ -3,13 +3,14 @@
 import io
 import json
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import pytest
 from PIL import Image
 
 from preview_screenshot import registry
 from preview_screenshot.playwright_backend import PlaywrightBackend
+from stack_generator import visual_qa
 from stack_generator.visual_qa import (
     capture,
     is_blank,
@@ -214,3 +215,17 @@ async def test_run_version_qa_rejects_unknown_version(
         await run_version_qa(workspace, "nope")
     with pytest.raises(KeyError):
         await run_version_qa(workspace, "../etc")
+
+
+async def test_run_version_qa_raises_when_renderer_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def unavailable() -> Any:
+        raise RuntimeError("Executable doesn't exist")
+
+    monkeypatch.setattr(visual_qa, "shared_chromium", unavailable)
+    workspace = _workspace(tmp_path, [GRID_PAGE])
+    # Every option "failing" would be a false alarm: report nothing instead.
+    with pytest.raises(RuntimeError):
+        await run_version_qa(workspace, "h1")
+    assert not (workspace.path / "qa" / "h1" / "qa.json").exists()

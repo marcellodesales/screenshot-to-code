@@ -3,8 +3,9 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import FileResponse
 
-from routes.runs import SaveVersionRequest, list_stacks, save_version
+from routes.runs import SaveVersionRequest, get_qa_file, list_stacks, save_version
 from stack_generator.workspace import RunWorkspace, new_run_id
 
 
@@ -134,3 +135,50 @@ async def test_put_version_too_large_413(runs_dir: Path) -> None:
         )
     assert exc_info.value.status_code == 413
     assert not ws.has_version("e1")
+
+
+@pytest.mark.asyncio
+async def test_get_qa_file_serves_qa_pngs(runs_dir: Path) -> None:
+    ws = _workspace(runs_dir)
+    qa = ws.path / "qa" / "h1"
+    qa.mkdir(parents=True)
+    (qa / "op1-1280.png").write_bytes(b"\x89PNG-op1")
+    (qa / "app-op2-1280.png").write_bytes(b"\x89PNG-app")
+    (qa / "qa.json").write_text("{}", encoding="utf-8")
+
+    response = await get_qa_file(ws.run_id, "h1", "op1-1280.png")
+    assert isinstance(response, FileResponse)
+    assert Path(response.path) == qa / "op1-1280.png"
+    assert response.media_type == "image/png"
+    app = await get_qa_file(ws.run_id, "h1", "app-op2-1280.png")
+    assert Path(app.path) == qa / "app-op2-1280.png"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "run_id, commit_hash, file_name",
+    [
+        ("BAD", "h1", "op1-1280.png"),
+        ("../../etc", "h1", "op1-1280.png"),
+        (None, "nope", "op1-1280.png"),
+        (None, "..", "op1-1280.png"),
+        (None, "h1", "qa.json"),
+        (None, "h1", "op1-1280.jpg"),
+        (None, "h1", "../op1-1280.png"),
+        (None, "h1", "opx-1280.png"),
+        (None, "h1", "op2-375.png"),  # well-formed but missing
+    ],
+)
+async def test_get_qa_file_404(
+    runs_dir: Path, run_id: str | None, commit_hash: str, file_name: str
+) -> None:
+    ws = _workspace(runs_dir)
+    qa = ws.path / "qa" / "h1"
+    qa.mkdir(parents=True)
+    (qa / "op1-1280.png").write_bytes(b"\x89PNG")
+    (qa / "qa.json").write_text("{}", encoding="utf-8")
+    (qa / "op1-1280.jpg").write_bytes(b"jpg")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_qa_file(run_id or ws.run_id, commit_hash, file_name)
+    assert exc_info.value.status_code == 404

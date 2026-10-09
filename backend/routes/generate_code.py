@@ -55,6 +55,7 @@ MessageType = Literal[
     "toolResult",
     "runInfo",
     "versionCommitted",
+    "visualQa",
 ]
 from prompts.pipeline import build_prompt_messages
 from prompts.request_parsing import parse_prompt_content, parse_prompt_history
@@ -66,7 +67,12 @@ from uploaded_assets import (
 )
 from agent.runner import Agent
 from fs_logging.agent_runs import AgentRunRecorder
+from stack_generator.visual_qa import run_version_qa
 from stack_generator.workspace import RunWorkspace, new_run_id
+
+# Visual QA runs after versionCommitted, before the socket closes; past this
+# budget it is skipped so it never holds up generation for long.
+VISUAL_QA_TIMEOUT_SECONDS = 20.0
 from routes.model_choice_sets import (
     ALL_KEYS_MODELS_DEFAULT,
     ALL_KEYS_MODELS_TEXT_CREATE,
@@ -868,6 +874,28 @@ class RunWorkspaceMiddleware(Middleware):
             )
         except Exception as e:
             print(f"[RUN_WORKSPACE] Could not commit version: {e}")
+            return
+        await self._send_visual_qa(context, workspace, params.commit_hash)
+
+    @staticmethod
+    async def _send_visual_qa(
+        context: PipelineContext, workspace: RunWorkspace, commit_hash: str
+    ) -> None:
+        """Best-effort visual QA of the committed options (bounded; never fatal)."""
+        if getattr(context.ws_comm, "is_closed", False):
+            return  # Nobody is listening for the result.
+        try:
+            data = await asyncio.wait_for(
+                run_version_qa(workspace, commit_hash),
+                timeout=VISUAL_QA_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            print(f"[VISUAL_QA] Skipped: took over {VISUAL_QA_TIMEOUT_SECONDS}s")
+            return
+        except Exception as e:
+            print(f"[VISUAL_QA] Skipped: {e}")
+            return
+        await context.send_message("visualQa", None, 0, data)
 
     @staticmethod
     def _save_uploads(workspace: RunWorkspace, params: ExtractedParams) -> None:
