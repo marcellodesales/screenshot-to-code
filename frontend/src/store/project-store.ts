@@ -8,6 +8,7 @@ import {
   VariantStatus,
 } from "../components/commits/types";
 import { PromptAsset } from "../types";
+import type { VisualQaData } from "../lib/visualQa";
 import { useAppStore } from "./app-store";
 
 // Store for app-wide state
@@ -27,6 +28,7 @@ interface ProjectStore {
   runId: string | null;
   setRunId: (runId: string | null) => void;
   setCommitGitSha: (hash: CommitHash, gitSha: string) => void;
+  setCommitVisualQa: (hash: CommitHash, visualQa: VisualQaData) => void;
 
   // Outputs
   commits: Record<string, Commit>;
@@ -136,6 +138,15 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       if (!commit) return state;
       return {
         commits: { ...state.commits, [hash]: { ...commit, gitSha } },
+      };
+    }),
+  // Also arrives after the version is done (after `versionCommitted`).
+  setCommitVisualQa: (hash, visualQa) =>
+    set((state) => {
+      const commit = state.commits[hash];
+      if (!commit) return state;
+      return {
+        commits: { ...state.commits, [hash]: { ...commit, visualQa } },
       };
     }),
 

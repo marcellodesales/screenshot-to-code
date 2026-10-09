@@ -8,6 +8,7 @@ import {
   VariantLabelTone,
 } from "../../lib/models";
 import WorkingPulse from "../core/WorkingPulse";
+import { QaIssueKind, qaForOption, qaIssues } from "../../lib/visualQa";
 
 const IFRAME_WIDTH = 1280;
 const IFRAME_HEIGHT = 550;
@@ -16,6 +17,16 @@ const IFRAME_HEIGHT = 550;
 const BADGE_TONE: Record<VariantLabelTone, string> = {
   fast: "bg-sky-500/90 text-white",
   max: "bg-amber-500/90 text-white",
+};
+
+// Visual QA badges: duplicates are informational, the rest are warnings.
+const QA_BADGE_TONE: Record<QaIssueKind, string> = {
+  duplicate:
+    "bg-gray-100 text-gray-600 dark:bg-zinc-800 dark:text-zinc-300",
+  blank_render:
+    "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300",
+  not_responsive:
+    "bg-amber-50 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200",
 };
 
 interface VariantThumbnailProps {
@@ -134,6 +145,8 @@ function Variants() {
             inputMode,
             generationType,
           });
+          const optionQa = qaForOption(commit.visualQa, index);
+          const issues = optionQa ? qaIssues(optionQa) : [];
 
           return (
             <div
@@ -179,6 +192,22 @@ function Variants() {
                   </div>
                 )}
               </div>
+              {issues.length > 0 && (
+                <div
+                  className="flex flex-wrap gap-1 px-2 pb-1.5 bg-white dark:bg-zinc-900"
+                  data-testid="variant-qa-badges"
+                  title={optionQa?.error ?? undefined}
+                >
+                  {issues.map((issue) => (
+                    <span
+                      key={issue.kind}
+                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium leading-none ${QA_BADGE_TONE[issue.kind]}`}
+                    >
+                      {issue.label}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}

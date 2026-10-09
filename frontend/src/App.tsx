@@ -75,6 +75,7 @@ function App() {
     resetExecutionConsoles,
     setRunId,
     setCommitGitSha,
+    setCommitVisualQa,
   } = useProjectStore();
 
   const {
@@ -561,6 +562,9 @@ function App() {
       },
       onVersionCommitted: (commitHash, gitSha) => {
         setCommitGitSha(commitHash, gitSha);
+      },
+      onVisualQa: (data) => {
+        setCommitVisualQa(data.commitHash, data);
       },
       onCancel: (reason, errorMessage) => {
         // The project may have been reset while this generation was still in
