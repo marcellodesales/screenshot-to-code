@@ -25,6 +25,7 @@ const STATE_LABELS: Record<OptionState, string> = {
   queued: "Queued",
   scaffolding: "Scaffolding",
   migrating: "Migrating",
+  building: "Building",
   committing: "Committing",
   starting: "Starting",
   running: "Running",

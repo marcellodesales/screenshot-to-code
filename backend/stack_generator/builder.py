@@ -1,9 +1,12 @@
 """The "Build app" pipeline (spec §7): version mocks -> stack app -> commit -> compose up.
 
 Per option: scaffold (``scaffold.sh``; static templates are copied), migrate the
-mock, write ``.env``; then one ``commit_app`` for every prepared option; then
-``docker compose up -d --build --wait`` per option. Options run concurrently
-and one option failing never stops the others.
+mock, write ``.env``, ``docker compose build``. When a scaffolded app's build
+fails, the LLM gets the end of the build log and repairs the migrated files (at
+most ``MAX_BUILD_REPAIRS`` times). Then one ``commit_app`` for every option
+that built; then ``docker compose up -d --wait`` per option. An option whose
+build never succeeds is failed and removed, never committed. Options run
+concurrently and one option failing never stops the others.
 
 Only the requested options are built; by default every option that visual QA
 (``qa/<ui-commit-hash>/qa.json``) didn't mark as a duplicate. Once an app is up
@@ -14,6 +17,7 @@ here relies on bind mounts (spec §7.1).
 """
 
 import asyncio
+import re
 import shutil
 import subprocess
 import tempfile
@@ -28,12 +32,20 @@ from stack_generator.migrate import (
     apply_system_fonts,
     default_migration_llm,
     migrate_mock,
+    repair_migration,
 )
 from stack_generator.naming import app_id_for, app_slug_from_prompt
 from stack_generator.workspace import RunWorkspace
 
 OptionState = Literal[
-    "queued", "scaffolding", "migrating", "committing", "starting", "running", "failed"
+    "queued",
+    "scaffolding",
+    "migrating",
+    "building",
+    "committing",
+    "starting",
+    "running",
+    "failed",
 ]
 CommandRunner = Callable[[list[str], Path], Awaitable[str]]
 
@@ -41,6 +53,12 @@ GATEWAY_PORT = 3311
 COMMAND_TIMEOUT_SECONDS = 15 * 60
 APP_QA_TIMEOUT_SECONDS = 90
 _ERROR_LIMIT = 2000
+# LLM repairs of a failed `docker compose build` before the option fails.
+MAX_BUILD_REPAIRS = 2
+# Build-log lines sent to the repair call / kept in the option's error.
+_REPAIR_LOG_LINES = 120
+_ERROR_LOG_LINES = 25
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _FIRST_BUILD_MESSAGE = ":tada: First version"
 # Each build commit is pinned as refs/s2c/builds/<k> (k = 1, 2, ...).
 _BUILD_REF_PREFIX = "refs/s2c/builds/"
@@ -96,6 +114,14 @@ class BuildJob:
 
 
 class CommandError(RuntimeError):
+    """A failed command; ``output`` is its full stdout + stderr."""
+
+    def __init__(self, message: str, *, output: str = "") -> None:
+        super().__init__(message)
+        self.output = output
+
+
+class BuildError(RuntimeError):
     pass
 
 
@@ -117,8 +143,10 @@ async def run_command(argv: list[str], cwd: Path) -> str:
         raise CommandError(f"{argv[0]} timed out after {COMMAND_TIMEOUT_SECONDS}s")
     if process.returncode != 0:
         detail = (stderr or stdout).decode("utf-8", "replace").strip()
+        output = (stdout + stderr).decode("utf-8", "replace")
         raise CommandError(
-            f"{Path(argv[0]).name} exited with {process.returncode}: {detail[-_ERROR_LIMIT:]}"
+            f"{Path(argv[0]).name} exited with {process.returncode}: {detail[-_ERROR_LIMIT:]}",
+            output=output,
         )
     return stdout.decode("utf-8", "replace")
 
@@ -126,6 +154,26 @@ async def run_command(argv: list[str], cwd: Path) -> str:
 def _error_text(exc: BaseException) -> str:
     text = str(exc) or type(exc).__name__
     return text[-_ERROR_LIMIT:]
+
+
+def _log_tail(text: str, lines: int) -> str:
+    """Last ``lines`` non-empty lines, without ANSI escapes."""
+    kept = [line.rstrip() for line in _ANSI_RE.sub("", text).splitlines() if line.strip()]
+    return "\n".join(kept[-lines:])
+
+
+def _command_output(exc: BaseException) -> str:
+    if isinstance(exc, CommandError) and exc.output.strip():
+        return exc.output
+    return str(exc) or type(exc).__name__
+
+
+def _build_error(output: str, repairs: int) -> str:
+    reason = "Build failed" + (
+        f" after {repairs} repair attempt{'s' if repairs != 1 else ''}" if repairs else ""
+    )
+    tail = _log_tail(output, _ERROR_LOG_LINES)
+    return f"{reason}:\n{tail[-(_ERROR_LIMIT - len(reason) - 2):]}"
 
 
 def _app_title(slug: str) -> str:
@@ -390,12 +438,69 @@ class BuildManager:
             (app_dir / ".env").write_text(
                 f"APP_ID={app_id}\nAPP_HOST={app_id}.localhost\n", encoding="utf-8"
             )
+            sources = [path for path in files if path != template.mock_path]
+            await self._build(option, app_dir, template, sources, llm, title)
             return app_dir
         except Exception as exc:
             self._fail(option, exc)
             # Never commit a half-built app.
             await asyncio.to_thread(shutil.rmtree, app_dir, True)
             return None
+
+    async def _build(
+        self,
+        option: OptionStatus,
+        app_dir: Path,
+        template: StackTemplate,
+        sources: list[str],
+        llm: MigrationLlm,
+        title: str,
+    ) -> None:
+        """``docker compose build``; on failure repair the migrated files and retry.
+
+        Raises ``BuildError`` once the build failed ``MAX_BUILD_REPAIRS + 1``
+        times (static templates: once) or a repair was invalid. Repairs only
+        touch ``src/``/``public/`` (migration targets), so the lockfile stays.
+        """
+        repairs = 0
+        while True:
+            self._set(option, "building", "Building")
+            try:
+                await self._runner(
+                    [
+                        "docker", "compose", "--progress", "plain",
+                        "--project-directory", str(app_dir), "build",
+                    ],
+                    app_dir,
+                )
+                return
+            except Exception as exc:
+                output = _command_output(exc)
+                if not template.has_scaffold or repairs >= MAX_BUILD_REPAIRS:
+                    raise BuildError(_build_error(output, repairs)) from exc
+
+            repairs += 1
+            self._set(
+                option, "building", f"Repairing build (attempt {repairs}/{MAX_BUILD_REPAIRS})"
+            )
+            current = {
+                path: (app_dir / path).read_text(encoding="utf-8")
+                for path in sources
+                if (app_dir / path).is_file()
+            }
+            try:
+                repaired = await repair_migration(
+                    files=current,
+                    build_log=_log_tail(output, _REPAIR_LOG_LINES),
+                    template=template,
+                    llm=llm,
+                )
+            except Exception as exc:
+                raise BuildError(f"Build repair failed: {_error_text(exc)}") from exc
+            _write_files(app_dir, repaired)
+            # layout.tsx is the tool's: keep it (and the system fonts) intact.
+            apply_system_fonts(app_dir, title)
+            sources = sorted(set(sources) | set(repaired))
 
     def _llm_for(
         self, template: StackTemplate, api_keys: dict[str, str | None]
@@ -434,12 +539,13 @@ class BuildManager:
         return True
 
     async def _start(self, job: BuildJob, option: OptionStatus, app_dir: Path) -> None:
-        self._set(option, "starting", "docker compose up --build")
+        # Already built (before the commit): just start the image.
+        self._set(option, "starting", "docker compose up")
         try:
             await self._runner(
                 [
                     "docker", "compose", "--project-directory", str(app_dir),
-                    "up", "-d", "--build", "--wait",
+                    "up", "-d", "--wait",
                 ],
                 app_dir,
             )

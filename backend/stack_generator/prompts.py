@@ -1,5 +1,7 @@
 """Prompts for migrating a single-file mock into a framework stack."""
 
+import json
+
 from prompts.policies import FLUID_LAYOUT_POLICY
 
 MIGRATION_SYSTEM_PROMPT = f"""You are a senior front-end engineer. You convert a single-file
@@ -55,3 +57,30 @@ Convert this mock:
 <mock>
 {mock_html}
 </mock>"""
+
+
+def repair_user_prompt(
+    *, files: dict[str, str], build_log: str, migration_targets: list[str]
+) -> str:
+    """Ask for a fix after `next build` failed on the migrated files."""
+    targets = "\n".join(f"- {target}" for target in migration_targets)
+    file_map = json.dumps({"files": files}, indent=2, ensure_ascii=False)
+    return f"""The Next.js production build failed with this log (last lines):
+
+<build-log>
+{build_log}
+</build-log>
+
+These are the files you produced for the app:
+
+{file_map}
+
+Fix the build. Change only what's needed to make `next build` succeed and keep
+the rendered page the same. Return the corrected files as the same JSON file map
+({{"files": {{"<path>": "<file content>"}}}}): include every file you changed;
+files you leave out stay as they are.
+
+Allowed target paths (glob patterns; "*" never crosses a "/"):
+{targets}
+
+Allowed extensions: .tsx, .ts, .css, .svg"""

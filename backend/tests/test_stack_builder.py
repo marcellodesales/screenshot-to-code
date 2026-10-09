@@ -5,14 +5,26 @@ from pathlib import Path
 
 import pytest
 
-from typing import Any
+from typing import Any, Callable
 
 from stack_generator import visual_qa
-from stack_generator.builder import BuildManager
+from stack_generator.builder import MAX_BUILD_REPAIRS, BuildManager, CommandError
 from stack_generator.migrate import MigrationLlm
 from stack_generator.workspace import RunWorkspace, new_run_id
 
 STATIC_MOCK = "<html><body>STATIC-MOCK</body></html>"
+
+# What a failed `docker compose build` of a Next.js app prints (with ANSI colours).
+BUILD_LOG = "\n".join(
+    [f"#13 0.{i} noise line {i}" for i in range(300)]
+    + [
+        "\x1b[31mError: Route \"/\": Next.js encountered the unstable value "
+        "`new Date()` in a Client Component.\x1b[0m",
+        "    at l (src/components/Footer.tsx:88:22)",
+        'Error occurred prerendering page "/".',
+        "failed to solve: process \"/bin/sh -c pnpm build\" did not complete successfully",
+    ]
+)
 
 
 class FakeRunner:
@@ -22,9 +34,15 @@ class FakeRunner:
         self.calls: list[tuple[list[str], Path]] = []
         self.fail_in: set[str] = set()
         self.gate: asyncio.Event | None = None
+        # marker in cwd -> how many `docker compose ... build` calls fail there.
+        self.build_failures: dict[str, int] = {}
+        self.build_log = BUILD_LOG
+        self.on_call: Callable[[list[str]], None] | None = None
 
     async def __call__(self, argv: list[str], cwd: Path) -> str:
         self.calls.append((argv, cwd))
+        if self.on_call is not None:
+            self.on_call(argv)
         if self.gate is not None:
             await self.gate.wait()
         if argv[0].endswith("scaffold.sh"):
@@ -41,7 +59,15 @@ class FakeRunner:
         for marker in self.fail_in:
             if marker in str(cwd):
                 raise RuntimeError(f"compose failed in {marker}")
+        if argv[:2] == ["docker", "compose"] and argv[-1] == "build":
+            for marker, remaining in self.build_failures.items():
+                if marker in str(cwd) and remaining > 0:
+                    self.build_failures[marker] = remaining - 1
+                    raise CommandError("docker exited with 1", output=self.build_log)
         return ""
+
+    def build_calls(self) -> list[tuple[list[str], Path]]:
+        return [(argv, cwd) for argv, cwd in self.compose_calls() if argv[-1] == "build"]
 
     def compose_calls(self) -> list[tuple[list[str], Path]]:
         return [(argv, cwd) for argv, cwd in self.calls if argv[:2] == ["docker", "compose"]]
@@ -137,12 +163,16 @@ async def test_build_static_option_runs_compose(tmp_path: Path) -> None:
     assert f"APP_ID={app_id}\n" in env
     assert f"APP_HOST={app_id}.localhost\n" in env
 
-    [(argv, cwd)] = runner.compose_calls()
-    assert argv == [
-        "docker", "compose", "--project-directory", str(app_dir),
-        "up", "-d", "--build", "--wait",
+    # Built (before the commit), then started from the built image.
+    [(build_argv, build_cwd), (up_argv, up_cwd)] = runner.compose_calls()
+    assert build_argv == [
+        "docker", "compose", "--progress", "plain", "--project-directory", str(app_dir),
+        "build",
     ]
-    assert cwd == app_dir
+    assert up_argv == [
+        "docker", "compose", "--project-directory", str(app_dir), "up", "-d", "--wait",
+    ]
+    assert build_cwd == up_cwd == app_dir
     assert manager.get(workspace.run_id) is job
 
 
@@ -250,7 +280,7 @@ async def test_second_start_returns_running_job(tmp_path: Path) -> None:
 
     runner.gate.set()
     await manager.wait(workspace.run_id)
-    assert len(runner.compose_calls()) == 1
+    assert [argv[-1] for argv, _ in runner.compose_calls()] == ["build", "--wait"]
     assert first.options[0].state == "running"
 
     # Once finished, a new start is a new job.
@@ -322,7 +352,7 @@ async def test_build_only_selected_options(tmp_path: Path) -> None:
 
     assert [option.index for option in job.options] == [1]
     assert job.options[0].state == "running"
-    assert [cwd.parent.name for _, cwd in runner.compose_calls()] == ["op2"]
+    assert {cwd.parent.name for _, cwd in runner.compose_calls()} == {"op2"}
     assert not (workspace.path / "op1" / "app").exists()
 
 
@@ -339,7 +369,7 @@ async def test_default_options_skip_qa_duplicates(tmp_path: Path) -> None:
     await manager.wait(workspace.run_id)
 
     assert [option.index for option in job.options] == [0, 2]
-    assert sorted(cwd.parent.name for _, cwd in runner.compose_calls()) == ["op1", "op3"]
+    assert sorted({cwd.parent.name for _, cwd in runner.compose_calls()}) == ["op1", "op3"]
 
 
 @pytest.mark.asyncio
@@ -417,3 +447,199 @@ async def test_app_qa_failure_keeps_running(tmp_path: Path) -> None:
     assert option.step_message == "Running"
     assert option.url is not None and option.error is None
     assert (option.screenshot, option.parity, option.render_ok) == (None, None, None)
+
+
+
+# -- build before commit + repair loop ----------------------------------------
+
+BROKEN_FOOTER = """"use client";
+export default function Footer() { return <p>{new Date().getFullYear()}</p>; }
+"""
+FIXED_FOOTER = """export default function Footer() { return <p>2026</p>; }
+"""
+PAGE = """import Footer from "@/components/Footer";
+export default function Page() { return <Footer />; }
+"""
+
+
+class RepairingLlm:
+    """Migrates to a broken Footer; repair calls answer with ``repair_files``."""
+
+    def __init__(self, repair_files: dict[str, str] | None = None) -> None:
+        self.migrations: list[str] = []
+        self.repairs: list[str] = []
+        self.repair_files = repair_files or {"src/components/Footer.tsx": FIXED_FOOTER}
+
+    def factory(self, **_: str | None) -> MigrationLlm:
+        async def llm(system: str, user: str) -> str:
+            if "build failed" in user:
+                self.repairs.append(user)
+                return json.dumps({"files": self.repair_files})
+            self.migrations.append(user)
+            return json.dumps(
+                {"files": {"src/app/page.tsx": PAGE, "src/components/Footer.tsx": BROKEN_FOOTER}}
+            )
+
+        return llm
+
+
+def _main_tree(workspace: RunWorkspace) -> str:
+    return subprocess.run(
+        ["git", "-c", "safe.directory=*", "ls-tree", "-r", "--name-only", "main"],
+        cwd=workspace.path, check=True, capture_output=True, text=True,
+    ).stdout
+
+
+def _nextjs_run(tmp_path: Path) -> RunWorkspace:
+    return _make_run(tmp_path, source_stack="react_tailwind", codes=["<p>MOCK</p>"])
+
+
+def test_max_build_repairs_is_two() -> None:
+    assert MAX_BUILD_REPAIRS == 2
+
+
+@pytest.mark.asyncio
+async def test_build_failure_repaired_then_committed_and_started(tmp_path: Path) -> None:
+    workspace = _nextjs_run(tmp_path)
+    runner = FakeRunner()
+    runner.build_failures = {"op1": 1}
+    llm = RepairingLlm()
+    manager = BuildManager(runner=runner, llm_factory=llm.factory, runs_dir=tmp_path)
+    job = manager.start(workspace.run_id, "h1", "pnpm", {"anthropic_api_key": "k"})
+    messages: list[str] = []
+    runner.on_call = lambda argv: messages.append(job.options[0].step_message)
+
+    await manager.wait(workspace.run_id)
+
+    option = job.options[0]
+    assert option.state == "running", option.error
+    assert len(llm.migrations) == 1
+    assert len(llm.repairs) == 1
+    repair_prompt = llm.repairs[0]
+    # The repair sees the end of the build log (ANSI stripped) and the files.
+    assert "unstable value `new Date()`" in repair_prompt
+    assert "Footer.tsx:88:22" in repair_prompt
+    assert "\x1b[" not in repair_prompt
+    assert "noise line 10\n" not in repair_prompt
+    assert "new Date().getFullYear()" in repair_prompt
+    # Two builds, then `up` without rebuilding.
+    assert [argv[-1] for argv, _ in runner.compose_calls()] == ["build", "build", "--wait"]
+    # Step message at each command: scaffold, build, build (after repair), up.
+    assert messages[1:3] == ["Building", "Building"]
+    # The commit holds the repaired file.
+    committed = subprocess.run(
+        ["git", "-c", "safe.directory=*", "show", "main:op1/app/src/components/Footer.tsx"],
+        cwd=workspace.path, check=True, capture_output=True, text=True,
+    ).stdout
+    assert committed == FIXED_FOOTER
+    # Layout is still the tool's (system fonts), whatever the repair did.
+    layout = (workspace.path / "op1/app/src/app/layout.tsx").read_text()
+    assert "next/font" not in layout
+
+
+@pytest.mark.asyncio
+async def test_repair_step_message_reported(tmp_path: Path) -> None:
+    workspace = _nextjs_run(tmp_path)
+    runner = FakeRunner()
+    runner.build_failures = {"op1": 1}
+    seen: list[str] = []
+    llm = RepairingLlm()
+
+    def factory(**keys: str | None) -> MigrationLlm:
+        inner = llm.factory(**keys)
+
+        async def wrapped(system: str, user: str) -> str:
+            if "build failed" in user:
+                seen.append(job.options[0].step_message)
+            return await inner(system, user)
+
+        return wrapped
+
+    manager = BuildManager(runner=runner, llm_factory=factory, runs_dir=tmp_path)
+    job = manager.start(workspace.run_id, "h1", "pnpm", {"anthropic_api_key": "k"})
+    await manager.wait(workspace.run_id)
+
+    assert job.options[0].state == "running", job.options[0].error
+    assert seen == [f"Repairing build (attempt 1/{MAX_BUILD_REPAIRS})"]
+
+
+@pytest.mark.asyncio
+async def test_build_keeps_failing_option_failed_and_not_committed(tmp_path: Path) -> None:
+    workspace = _nextjs_run(tmp_path)
+    runner = FakeRunner()
+    runner.build_failures = {"op1": 3}
+    llm = RepairingLlm()
+    manager = BuildManager(runner=runner, llm_factory=llm.factory, runs_dir=tmp_path)
+
+    job = manager.start(workspace.run_id, "h1", "pnpm", {"anthropic_api_key": "k"})
+    await manager.wait(workspace.run_id)
+
+    option = job.options[0]
+    assert option.state == "failed"
+    assert len(llm.repairs) == MAX_BUILD_REPAIRS
+    assert len(runner.build_calls()) == MAX_BUILD_REPAIRS + 1
+    assert [argv[-1] for argv, _ in runner.compose_calls()] == ["build"] * 3  # never started
+    assert option.error is not None
+    assert option.error.startswith("Build failed")
+    assert "unstable value `new Date()`" in option.error
+    assert "\x1b[" not in option.error
+    assert option.url is None
+    assert "op1/app/" not in _main_tree(workspace)
+    assert not (workspace.path / "op1" / "app").exists()
+
+
+@pytest.mark.asyncio
+async def test_only_successful_builds_are_committed(tmp_path: Path) -> None:
+    workspace = _make_run(
+        tmp_path, source_stack="react_tailwind", codes=["<p>A</p>", "<p>B</p>"]
+    )
+    runner = FakeRunner()
+    runner.build_failures = {"op2": 3}
+    llm = RepairingLlm()
+    manager = BuildManager(runner=runner, llm_factory=llm.factory, runs_dir=tmp_path)
+
+    job = manager.start(workspace.run_id, "h1", "pnpm", {"anthropic_api_key": "k"})
+    await manager.wait(workspace.run_id)
+
+    assert [o.state for o in job.options] == ["running", "failed"]
+    tree = _main_tree(workspace)
+    assert "op1/app/src/components/Footer.tsx" in tree
+    assert "op2/app/" not in tree
+
+
+@pytest.mark.asyncio
+async def test_repair_with_disallowed_path_fails(tmp_path: Path) -> None:
+    workspace = _nextjs_run(tmp_path)
+    runner = FakeRunner()
+    runner.build_failures = {"op1": 1}
+    llm = RepairingLlm(repair_files={"next.config.ts": "export default {}"})
+    manager = BuildManager(runner=runner, llm_factory=llm.factory, runs_dir=tmp_path)
+
+    job = manager.start(workspace.run_id, "h1", "pnpm", {"anthropic_api_key": "k"})
+    await manager.wait(workspace.run_id)
+
+    option = job.options[0]
+    assert option.state == "failed"
+    assert option.error is not None and "next.config.ts" in option.error
+    assert len(runner.build_calls()) == 1
+    assert "op1/app/" not in _main_tree(workspace)
+    assert not (workspace.path / "op1" / "app").exists()
+
+
+@pytest.mark.asyncio
+async def test_static_build_failure_is_not_repaired(tmp_path: Path) -> None:
+    workspace = _make_run(tmp_path, source_stack="html_css", codes=[STATIC_MOCK])
+    runner = FakeRunner()
+    runner.build_failures = {"op1": 1}
+    manager = BuildManager(runner=runner, llm_factory=_no_llm_factory, runs_dir=tmp_path)
+
+    job = manager.start(workspace.run_id, "h1", "pnpm", {})
+    await manager.wait(workspace.run_id)
+
+    option = job.options[0]
+    assert option.state == "failed"
+    assert len(runner.build_calls()) == 1
+    assert option.error is not None and option.error.startswith("Build failed")
+    assert "Footer.tsx:88:22" in option.error
+    assert "Static templates" not in option.error
+    assert not (workspace.path / "op1" / "app").exists()

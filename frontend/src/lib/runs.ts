@@ -104,6 +104,7 @@ export type OptionState =
   | "queued"
   | "scaffolding"
   | "migrating"
+  | "building"
   | "committing"
   | "starting"
   | "running"
